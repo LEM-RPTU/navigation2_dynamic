@@ -1,0 +1,102 @@
+flowchart TD
+    %% Main Node Initialization
+    Start([Start ODPP Node]) --> Init[Initialize DynamicObstacleNode]
+    Init --> DeclareParams[Declare Parameters:<br/>- length_future_time_series<br/>- min_samples_for_prediction<br/>- var_time_steps<br/>- static_threshold]
+    
+    %% Costmap Setup
+    DeclareParams --> CreateCostmap[Create Costmap2DROS Instance]
+    CreateCostmap --> StartThread[Start Costmap Thread]
+    StartThread --> ConfigureCostmap[Configure & Activate Costmap]
+    
+    %% Timer and Publisher Setup
+    ConfigureCostmap --> CreateTimer[Create 200ms Timer]
+    CreateTimer --> CreatePub[Create Obstacle Publisher]
+    CreatePub --> MainLoop{Timer Callback<br/>processCostmap}
+    
+    %% Main Processing Loop
+    MainLoop --> GetCostmap[Get Current Costmap Data]
+    GetCostmap --> BlobDetection[Blob Detection via Flood Fill]
+    
+    %% Blob Detection Details
+    BlobDetection --> ScanCells[Scan All Costmap Cells]
+    ScanCells --> CheckThreshold{Cell Cost >=<br/>INSCRIBED_INFLATED_OBSTACLE?}
+    CheckThreshold -->|Yes| FloodFill[Flood Fill Algorithm<br/>Find Connected Components]
+    CheckThreshold -->|No| ScanCells
+    
+    FloodFill --> CreateCluster[Create BlobCluster:<br/>- Raw points<br/>- Centroid<br/>- Convex hull boundary]
+    CreateCluster --> MoreCells{More cells<br/>to process?}
+    MoreCells -->|Yes| ScanCells
+    MoreCells -->|No| TrackingPhase[Obstacle Tracking Phase]
+    
+    %% Tracking and Data Association
+    TrackingPhase --> FirstRun{First run<br/>no tracked obstacles?}
+    FirstRun -->|Yes| CreateNew[Create New TrackedObstacle<br/>for each cluster]
+    FirstRun -->|No| DataAssociation[Hungarian Assignment<br/>Cost Matrix Matching]
+    
+    CreateNew --> AssignIDs[Assign unique IDs<br/>Initialize history]
+    AssignIDs --> PredictStates[Predict Future States]
+    
+    DataAssociation --> BuildCostMatrix[Build Cost Matrix:<br/>Distance between predictions<br/>and current detections]
+    BuildCostMatrix --> HungarianAlg[Hungarian Algorithm<br/>Optimal Assignment]
+    HungarianAlg --> ProcessMatches[Process Matches]
+    
+    ProcessMatches --> UpdateMatched[Update Matched Obstacles:<br/>- Update centroid<br/>- Add to history<br/>- Reset missed frames]
+    ProcessMatches --> CreateUnmatched[Create New Obstacles<br/>for unmatched detections]
+    ProcessMatches --> IncrementMissed[Increment missed frames<br/>for unmatched tracks]
+    
+    UpdateMatched --> PredictStates
+    CreateUnmatched --> PredictStates
+    IncrementMissed --> CleanupOld{Missed frames > 3?}
+    CleanupOld -->|Yes| RemoveTrack[Remove Track]
+    CleanupOld -->|No| PredictStates
+    
+    %% Prediction System
+    PredictStates --> CheckHistory{History size >=<br/>min_samples?}
+    CheckHistory -->|No| StaticPrediction[Repeat Current Position<br/>Zero MSE values]
+    CheckHistory -->|Yes| VelocityModel[Constant Velocity Model:<br/>Calculate velocity from<br/>last 2 history points]
+    
+    VelocityModel --> ExtrapolateFuture[Extrapolate Future Positions:<br/>future_pos = current + velocity * time_step]
+    StaticPrediction --> PublishPhase[Publishing Phase]
+    ExtrapolateFuture --> PublishPhase
+    
+    %% Publishing
+    PublishPhase --> CreateMsg[Create ObstacleArray Message]
+    CreateMsg --> FillObstacles[For each tracked obstacle:<br/>- Generate UUID<br/>- Set positions & predictions<br/>- Calculate velocity & heading<br/>- Find matching polygon<br/>- Set covariances]
+    
+    FillObstacles --> PublishMsg[Publish to /obstacles topic]
+    PublishMsg --> WaitTimer[Wait for next timer cycle]
+    WaitTimer --> MainLoop
+    
+    %% Data Structures
+    subgraph DataStructures [Data Structures]
+        BlobCluster[BlobCluster:<br/>- points: vector&lt;Point&gt;<br/>- centroid: Point<br/>- boundary: vector&lt;Point&gt;]
+        TrackedObstacle[TrackedObstacle:<br/>- id: int<br/>- last_centroid: Point<br/>- history: vector&lt;Point&gt;<br/>- prediction: vector&lt;Point&gt;<br/>- prediction_mse: vector&lt;vector&lt;double&gt;&gt;<br/>- missed_frames: int]
+        PredResult[PredictionResult:<br/>- prediction: vector&lt;Point&gt;<br/>- prediction_mse: vector&lt;vector&lt;double&gt;&gt;]
+    end
+    
+    %% Key Algorithms
+    subgraph Algorithms [Key Algorithms]
+        FloodFillAlg[Flood Fill:<br/>8-connected component<br/>labeling for blob detection]
+        ConvexHull[Convex Hull:<br/>Gift Wrapping algorithm<br/>for boundary computation]
+        Hungarian[Hungarian Algorithm:<br/>Kuhn-Munkres for optimal<br/>data association]
+        VelModel[Constant Velocity Model:<br/>Linear extrapolation<br/>for motion prediction]
+    end
+    
+    %% Output
+    subgraph Output [Published Data]
+        ObstacleMsg[ObstacleArray Message:<br/>- header with timestamp<br/>- array of obstacles with:<br/>  * UUID & ID<br/>  * current + predicted positions<br/>  * velocity & heading<br/>  * polygon boundary<br/>  * covariance matrices]
+    end
+    
+    %% Styling
+    classDef processBox fill:#e1f5fe,stroke:#01579b,stroke-width:2px
+    classDef decisionBox fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    classDef dataBox fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
+    classDef algorithmBox fill:#e8f5e8,stroke:#1b5e20,stroke-width:2px
+    
+    class BlobDetection,TrackingPhase,PredictStates,PublishPhase processBox
+    class CheckThreshold,FirstRun,CheckHistory,CleanupOld decisionBox
+    class BlobCluster,TrackedObstacle,PredResult,ObstacleMsg dataBox
+    class FloodFillAlg,ConvexHull,Hungarian,VelModel algorithmBox
+
+
+    
