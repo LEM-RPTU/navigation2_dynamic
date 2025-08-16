@@ -30,6 +30,8 @@ find_package(unique_identifier_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Obstacle.msg"
   "msg/ObstacleArray.msg"
+  "msg/PredictionRequest.msg"
+  "msg/PredictionResponse.msg"
   DEPENDENCIES std_msgs sensor_msgs unique_identifier_msgs
  )
 

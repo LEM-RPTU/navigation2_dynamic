@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>obstacle_detection</name>
+  <version>0.1.0</version>
+  <description>Dynamic obstacle detection, tracking, and publishing from costmap blobs.</description>
+
+  <maintainer email="joseriyancyriac@gmail.com">Riyan Cyriac Jose</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>nav2_costmap_2d</depend>
+  <depend>geometry_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>unique_identifier_msgs</depend>
+  <depend>nav2_dynamic_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

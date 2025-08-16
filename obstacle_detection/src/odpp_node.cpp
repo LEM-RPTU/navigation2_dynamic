@@ -1,7 +1,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <nav2_costmap_2d/costmap_2d_ros.hpp>
-#include <odpp_msgs/msg/obstacle_array.hpp>
-#include <odpp_msgs/msg/obstacle.hpp>
+#include <nav2_dynamic_msgs/msg/obstacle_array.hpp>
+#include <nav2_dynamic_msgs/msg/obstacle.hpp>
 // #include <unique_id/unique_id.h>
 #include <unique_identifier_msgs/msg/uuid.h>
 #include <geometry_msgs/msg/point.hpp>
@@ -112,7 +112,7 @@ public:
             std::bind(&DynamicObstacleNode::processCostmap, this));
 
         // Publisher for custom obstacles.
-        obstacle_pub_ = this->create_publisher<odpp_msgs::msg::ObstacleArray>("obstacles", 10);
+        obstacle_pub_ = this->create_publisher<nav2_dynamic_msgs::msg::ObstacleArray>("obstacles", 10);
 
         RCLCPP_INFO(this->get_logger(), "DynamicObstacleNode started.");
     }
@@ -121,7 +121,7 @@ private:
     std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
     std::unique_ptr<std::thread> costmap_thread_;
     rclcpp::TimerBase::SharedPtr timer_;
-    rclcpp::Publisher<odpp_msgs::msg::ObstacleArray>::SharedPtr obstacle_pub_;
+    rclcpp::Publisher<nav2_dynamic_msgs::msg::ObstacleArray>::SharedPtr obstacle_pub_;
 
     // Tracking variables.
     std::map<int, TrackedObstacle> tracked_obstacles_;
@@ -373,14 +373,14 @@ private:
     //
     void publishObstacles(const std::vector<BlobCluster> &clusters)
     {
-        odpp_msgs::msg::ObstacleArray msg;
+        nav2_dynamic_msgs::msg::ObstacleArray msg;
         msg.header.stamp = now();
         msg.header.frame_id = costmap_ros_->getGlobalFrameID();
 
         for (const auto &pair : tracked_obstacles_)
         {
             const TrackedObstacle &obs = pair.second;
-            odpp_msgs::msg::Obstacle obst;
+            nav2_dynamic_msgs::msg::Obstacle obst;
             obst.uuid = generateRealUUID();
             obst.score = 1.0f;
             obst.id = obs.id;
