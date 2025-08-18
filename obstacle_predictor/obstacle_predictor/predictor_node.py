@@ -5,7 +5,7 @@ import rclpy
 from rclpy.node import Node
 import numpy as np
 from typing import List
-from odpp_msgs.msg import PredictionRequest, PredictionResponse
+from nav2_dynamic_msgs.msg import PredictionRequest, PredictionResponse
 from geometry_msgs.msg import Point
 
 class PredictorNode(Node):
