@@ -9,24 +9,43 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(std_msgs REQUIRED)
-find_package(unique_identifier_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(nav2_dynamic_msgs REQUIRED)
+find_package(unique_identifier_msgs REQUIRED)
 
-add_executable(odpp_node src/odpp_node.cpp)
+add_executable(dynamic_obstacle_node
+  src/odpp_node.cpp
+  src/cluster_engine.cpp
+)
 
-ament_target_dependencies(odpp_node
+target_include_directories(dynamic_obstacle_node PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>
+)
+
+ament_target_dependencies(dynamic_obstacle_node
   rclcpp
   rclcpp_lifecycle
   nav2_costmap_2d
   geometry_msgs
-  std_msgs
-  unique_identifier_msgs
+  visualization_msgs
   nav2_dynamic_msgs
+  unique_identifier_msgs
 )
 
-install(TARGETS odpp_node
+install(TARGETS dynamic_obstacle_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
+install(DIRECTORY include/
+  DESTINATION include
+)
+
+install(DIRECTORY
+  config
+  launch
+  DESTINATION share/${PROJECT_NAME}
+)
+
+ament_export_include_directories(include)
 ament_package()
