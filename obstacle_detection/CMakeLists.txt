@@ -16,6 +16,7 @@ find_package(unique_identifier_msgs REQUIRED)
 add_executable(dynamic_obstacle_node
   src/odpp_node.cpp
   src/cluster_engine.cpp
+  src/tracker_engine.cpp
 )
 
 target_include_directories(dynamic_obstacle_node PUBLIC
