@@ -13,7 +13,7 @@ class TrackerEngine
 public:
   explicit TrackerEngine(double gate_distance = 3.0,
                          int max_missed = 3,
-                         std::size_t history_len = 20,
+                         std::size_t history_len = 5,
                          double dt_fallback = 0.2)
   : gate_distance_(gate_distance),
     max_missed_(max_missed),
@@ -28,8 +28,8 @@ public:
   double last_dt() const { return last_dt_sec_; }
 
   // Update persistent tracks with current clusters.
-  // Uses one-cycle-lag prediction stub (pred_t1 = last centroid).
-  TrackingResult update(const std::vector<BlobCluster>& clusters);
+  // Returns both assignment info and full track data.
+  TrackerPredictionFrame update(const std::vector<BlobCluster>& clusters);
 
 private:
   // Hungarian on a square matrix. Returns assignment row->col.

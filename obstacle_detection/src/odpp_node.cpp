@@ -16,6 +16,7 @@
 
 #include "nav2_dynamic_msgs/msg/obstacle_array.hpp"
 #include "nav2_dynamic_msgs/msg/obstacle.hpp"
+#include "nav2_dynamic_msgs/msg/prediction_request.hpp"
 #include "cluster_engine.hpp"
 #include "tracker_engine.hpp"
 #include "types.hpp"
@@ -31,7 +32,8 @@ public:
             "dynamic_obstacle_costmap", std::string{get_namespace()}, "dynamic_obstacle_costmap");
 
         costmap_thread_ = std::make_unique<std::thread>(
-            [](rclcpp_lifecycle::LifecycleNode::SharedPtr node) {
+            [](rclcpp_lifecycle::LifecycleNode::SharedPtr node)
+            {
                 rclcpp::spin(node->get_node_base_interface());
             },
             costmap_ros_);
@@ -49,8 +51,10 @@ public:
         tracker_engine_.set_max_missed(max_missed);
 
         // Publishers
-        marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("cluster_markers", 10);
+        predict_req_pub_ = this->create_publisher<nav2_dynamic_msgs::msg::PredictionRequest>("predict_request", 10);
+
         obstacle_pub_ = this->create_publisher<nav2_dynamic_msgs::msg::ObstacleArray>("obstacles_array", 10);
+        marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("cluster_markers", 10);
 
         // Periodic processing
         timer_ = this->create_wall_timer(
@@ -67,6 +71,7 @@ private:
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
     rclcpp::Publisher<nav2_dynamic_msgs::msg::ObstacleArray>::SharedPtr obstacle_pub_;
+    rclcpp::Publisher<nav2_dynamic_msgs::msg::PredictionRequest>::SharedPtr predict_req_pub_;
 
     ClusterEngine cluster_engine_;
     TrackerEngine tracker_engine_;
@@ -75,78 +80,101 @@ private:
     void processCostmap()
     {
         auto costmap = costmap_ros_->getCostmap();
-        if (!costmap) return;
+        if (!costmap)
+            return;
 
         const unsigned char cost_threshold = nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
 
         // 1) Clustering
         std::vector<BlobCluster> clusters = cluster_engine_.extract(costmap, cost_threshold);
 
-        // 2) Tracking (one-cycle-lag prediction is internal stub for now)
-        TrackingResult tr = tracker_engine_.update(clusters);
+        // 2) Tracking with TrackerPredictionFrame
+        TrackerPredictionFrame tr = tracker_engine_.update(clusters);
 
-        // 3) Publish
+        // 3) Publish prediction request
+        publishPredictionRequest(tr);
+
+        // 4) Receive Prediction - TODO: implement callback
+
+        // 5) Publish obstacle array (using track data directly)
+        publishObstacleArray(tr, costmap_ros_->getGlobalFrameID());
+
+        // 6) Visualization
         publishClusterMarkers(clusters, tr, costmap_ros_->getGlobalFrameID());
-        publishObstacleArray(clusters, tr, costmap_ros_->getGlobalFrameID());
     }
 
-    void publishObstacleArray(const std::vector<BlobCluster>& clusters,
-                              const TrackingResult& tr,
-                              const std::string& frame_id)
+    void publishPredictionRequest(const TrackerPredictionFrame &tr)
     {
-        // Map cluster index -> (id, velocity)
-        std::vector<int64_t> ids(clusters.size(), -1);
-        std::vector<geometry_msgs::msg::Vector3> vels(clusters.size(), geometry_msgs::msg::Vector3());
-        for (const auto& a : tr.assignments) {
-            if (a.cluster_index < ids.size()) {
-                ids[a.cluster_index] = a.id;
-                vels[a.cluster_index] = a.velocity;
+        nav2_dynamic_msgs::msg::PredictionRequest msg;
+        msg.prediction_steps = future_len_;
+        msg.obstacles.reserve(tr.tracks.size());
+
+        for (const auto &track : tr.tracks)
+        {
+            nav2_dynamic_msgs::msg::Obstacle tr_ob;
+            tr_ob.id = track.history.size();
+            // tr_ob.uuid = track.uuid;
+            // tr_ob.velocity = track.velocity;
+            // tr_ob.heading = track.heading;
+
+            // Convert history to chronological order (oldest→newest)
+            // Since TrackerEngine stores history with most-recent at the back
+            tr_ob.position.clear();
+            tr_ob.position.reserve(track.history.size());
+
+            // History is stored most-recent at back; send oldest -> newest
+
+            for (size_t i = 0; i < track.history.size(); ++i)
+            {
+                tr_ob.position.push_back(track.history[i]);
             }
+
+            msg.obstacles.push_back(std::move(tr_ob));
         }
 
+        predict_req_pub_->publish(msg);
+    }
+
+    void publishObstacleArray(const TrackerPredictionFrame &tr, const std::string &frame_id)
+    {
         nav2_dynamic_msgs::msg::ObstacleArray msg;
-        msg.header.stamp = now();
+        msg.header.stamp = tr.stamp;
         msg.header.frame_id = frame_id;
-        msg.obstacles.reserve(clusters.size());
+        msg.obstacles.reserve(tr.tracks.size());
 
-        for (size_t i = 0; i < clusters.size(); ++i) {
-            const auto& c = clusters[i];
-
+        for (const auto &track : tr.tracks)
+        {
             nav2_dynamic_msgs::msg::Obstacle ob;
-            ob.id = ids[i] >= 0 ? ids[i] : static_cast<int64_t>(i);
-            ob.score = 1.0f;
 
-            // Positions: current centroid + placeholders for future_len_
-            ob.position.clear();
-            ob.position.push_back(c.centroid);
-            for (int k = 0; k < future_len_; ++k) {
-                ob.position.push_back(c.centroid); // placeholder; predictor will overwrite later
+            // ID and score
+            ob.id = track.id;
+
+            // UUID - convert from int64 to UUID if needed
+            ob.uuid = track.uuid;
+
+            // Positions - current + predictions
+            ob.position = track.position;
+            // Ensure at least current + future_len positions
+            if (ob.position.size() < static_cast<size_t>(future_len_ + 1))
+            {
+                const auto &current = ob.position.empty() ? geometry_msgs::msg::Point() : ob.position.front();
+
+                while (ob.position.size() <= static_cast<size_t>(future_len_))
+                {
+                    ob.position.push_back(current);
+                }
             }
 
-            // Velocity and heading
-            ob.velocity = vels[i];
-            geometry_msgs::msg::Vector3 heading;
-            const double n = std::hypot(ob.velocity.x, ob.velocity.y);
-            if (n > 1e-6) { heading.x = ob.velocity.x / n; heading.y = ob.velocity.y / n; }
-            else { heading.x = heading.y = 0.0; }
-            heading.z = 0.0;
-            ob.heading = heading;
+            // Kinematics
+            ob.velocity = track.velocity;
+            ob.heading = track.heading;
 
             // Polygon hull
-            geometry_msgs::msg::Polygon poly;
-            poly.points.reserve(c.boundary.size());
-            for (const auto& p : c.boundary) {
-                geometry_msgs::msg::Point32 p32;
-                p32.x = static_cast<float>(p.x);
-                p32.y = static_cast<float>(p.y);
-                p32.z = static_cast<float>(p.z);
-                poly.points.push_back(p32);
-            }
-            ob.polygon = std::move(poly);
+            ob.polygon = track.polygon;
 
-            // Covariances zero for now
-            ob.position_covariance.fill(0.0);
-            ob.velocity_covariance.fill(0.0);
+            // Covariances
+            ob.position_covariance = track.position_covariance;
+            ob.velocity_covariance = track.velocity_covariance;
 
             msg.obstacles.push_back(std::move(ob));
         }
@@ -154,17 +182,20 @@ private:
         obstacle_pub_->publish(msg);
     }
 
-    void publishClusterMarkers(const std::vector<BlobCluster>& clusters,
-                               const TrackingResult& tr,
-                               const std::string& frame_id)
+    void publishClusterMarkers(const std::vector<BlobCluster> &clusters,
+                               const TrackerPredictionFrame &tr,
+                               const std::string &frame_id)
     {
+        // Build lookup from cluster index to track ID
         std::vector<int64_t> ids(clusters.size(), -1);
-        for (const auto& a : tr.assignments) {
-            if (a.cluster_index < ids.size()) ids[a.cluster_index] = a.id;
+        for (const auto &a : tr.assignments)
+        {
+            if (a.cluster_index < ids.size())
+                ids[a.cluster_index] = a.id;
         }
 
         visualization_msgs::msg::MarkerArray ma;
-        rclcpp::Time stamp = now();
+        rclcpp::Time stamp = tr.stamp;
 
         // Clear previous markers
         visualization_msgs::msg::Marker clear;
@@ -177,8 +208,9 @@ private:
 
         int id = 1;
 
-        for (size_t i = 0; i < clusters.size(); ++i) {
-            const auto& c = clusters[i];
+        for (size_t i = 0; i < clusters.size(); ++i)
+        {
+            const auto &c = clusters[i];
 
             // Hull
             visualization_msgs::msg::Marker hull;
@@ -195,7 +227,8 @@ private:
             hull.color.a = 0.9f;
             hull.lifetime = rclcpp::Duration(0, 7e8);
             hull.points = c.boundary;
-            if (c.boundary.size() >= 3) hull.points.push_back(c.boundary.front());
+            if (c.boundary.size() >= 3)
+                hull.points.push_back(c.boundary.front());
             hull.frame_locked = true;
             ma.markers.push_back(std::move(hull));
 
