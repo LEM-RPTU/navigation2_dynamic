@@ -23,15 +23,6 @@ struct BlobCluster
   std::vector<geometry_msgs::msg::Point> boundary;
 };
 
-// Per-cluster assignment after tracking
-struct ClusterAssignment
-{
-  size_t cluster_index;                 // index into current clusters
-  int64_t id;                           // persistent track ID
-  double cost;                          // association distance
-  bool new_track;                       // true if newly created track this tick
-};
-
 // Shared internal track data (tracker <-> predictor),
 // aligned with nav2_dynamic_msgs/Obstacle fields.
 struct ObstacleTrack
@@ -41,7 +32,7 @@ struct ObstacleTrack
   int64_t id{0};                            // integer ID
   float score{1.0f};                        // detection confidence
 
-  // position[0] = current centroid, position[1..N] = predictions
+  // position[0] = current centroid (detection or prediction), position[1..N] = predictions
   std::vector<geometry_msgs::msg::Point> position;
 
   geometry_msgs::msg::Vector3 velocity{}; // meters/second
@@ -55,12 +46,15 @@ struct ObstacleTrack
   // Internal-only fields (not in the .msg)
   std::vector<geometry_msgs::msg::Point> history; // past centroids, most-recent at back
   bool is_dynamic{false};
+
+  // Internal-only tracking state
+  int missed{0};                               // consecutive ticks without observation
+  geometry_msgs::msg::Point pred_t1{};         // one-cycle prediction (or last centroid)
 };
 
 struct TrackerPredictionFrame
 {
   rclcpp::Time stamp;
-  std::vector<ObstacleTrack> tracks;          // All active obstacle tracks
-  std::vector<ClusterAssignment> assignments; // Cluster-to-track assignments
-  std::vector<int64_t> retired_tracks;        // IDs of tracks removed this frame
+  std::vector<ObstacleTrack> tracks;     // Snapshot of all active tracks
+  std::vector<int64_t> retired_tracks;   // IDs of tracks removed this frame
 };

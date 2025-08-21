@@ -28,7 +28,7 @@ public:
   double last_dt() const { return last_dt_sec_; }
 
   // Update persistent tracks with current clusters.
-  // Returns both assignment info and full track data.
+  // Returns full track snapshot.
   TrackerPredictionFrame update(const std::vector<BlobCluster>& clusters);
 
 private:
@@ -38,15 +38,6 @@ private:
   static double dist(const geometry_msgs::msg::Point& a,
                      const geometry_msgs::msg::Point& b);
 
-  struct Track
-  {
-    int64_t id;
-    int missed{0};
-    std::vector<geometry_msgs::msg::Point> history;  // most-recent at back
-    geometry_msgs::msg::Point pred_t1;               // one-cycle-lag stub (== last centroid)
-    geometry_msgs::msg::Vector3 velocity;            // meters/second
-  };
-
   // Parameters
   double gate_distance_;
   int max_missed_;
@@ -54,8 +45,8 @@ private:
   double dt_fallback_;
   int64_t next_id_ = 1;
 
-  // State
-  std::vector<Track> tracks_;
+  // State (persistent tracks)
+  std::vector<ObstacleTrack> tracks_;
 
   // Time bookkeeping (for dt)
   std::chrono::steady_clock::time_point last_tp_;

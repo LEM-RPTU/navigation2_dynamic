@@ -112,7 +112,7 @@ private:
         for (const auto &track : tr.tracks)
         {
             nav2_dynamic_msgs::msg::Obstacle tr_ob;
-            tr_ob.id = track.history.size();
+            tr_ob.id = track.id;
             // tr_ob.uuid = track.uuid;
             // tr_ob.velocity = track.velocity;
             // tr_ob.heading = track.heading;
@@ -186,13 +186,7 @@ private:
                                const TrackerPredictionFrame &tr,
                                const std::string &frame_id)
     {
-        // Build lookup from cluster index to track ID
-        std::vector<int64_t> ids(clusters.size(), -1);
-        for (const auto &a : tr.assignments)
-        {
-            if (a.cluster_index < ids.size())
-                ids[a.cluster_index] = a.id;
-        }
+        (void)clusters; // no longer needed; visualization uses TrackerPredictionFrame
 
         visualization_msgs::msg::MarkerArray ma;
         rclcpp::Time stamp = tr.stamp;
@@ -208,16 +202,37 @@ private:
 
         int id = 1;
 
-        for (size_t i = 0; i < clusters.size(); ++i)
+        for (const auto &t : tr.tracks)
         {
-            const auto &c = clusters[i];
+            // Current position (position[0] = detection or prediction)
+            geometry_msgs::msg::Point current{};
+            if (!t.position.empty())
+            {
+                current = t.position.front();
+            }
 
-            // Hull
+            // Hull from track.polygon (Point32 -> Point)
+            std::vector<geometry_msgs::msg::Point> hull_points;
+            hull_points.reserve(t.polygon.points.size() + 1);
+            for (const auto &p32 : t.polygon.points)
+            {
+                geometry_msgs::msg::Point p;
+                p.x = p32.x;
+                p.y = p32.y;
+                p.z = p32.z;
+                hull_points.push_back(p);
+            }
+            if (hull_points.size() >= 3)
+            {
+                hull_points.push_back(hull_points.front()); // close loop
+            }
+
+            // Hull marker
             visualization_msgs::msg::Marker hull;
             hull.header.frame_id = frame_id;
             hull.header.stamp = stamp;
             hull.ns = "clusters_hull";
-            hull.id = id++;
+            hull.id = t.id;
             hull.type = visualization_msgs::msg::Marker::LINE_STRIP;
             hull.action = visualization_msgs::msg::Marker::ADD;
             hull.scale.x = 0.03;
@@ -226,18 +241,16 @@ private:
             hull.color.b = 0.1f;
             hull.color.a = 0.9f;
             hull.lifetime = rclcpp::Duration(0, 7e8);
-            hull.points = c.boundary;
-            if (c.boundary.size() >= 3)
-                hull.points.push_back(c.boundary.front());
+            hull.points = std::move(hull_points);
             hull.frame_locked = true;
             ma.markers.push_back(std::move(hull));
 
-            // Centroid
+            // Centroid marker (current track position)
             visualization_msgs::msg::Marker centroid;
             centroid.header.frame_id = frame_id;
             centroid.header.stamp = stamp;
             centroid.ns = "clusters_centroid";
-            centroid.id = id++;
+            centroid.id = t.id;
             centroid.type = visualization_msgs::msg::Marker::SPHERE;
             centroid.action = visualization_msgs::msg::Marker::ADD;
             centroid.scale.x = 0.12;
@@ -247,18 +260,18 @@ private:
             centroid.color.g = 1.0f;
             centroid.color.b = 0.2f;
             centroid.color.a = 0.95f;
-            centroid.pose.position = c.centroid;
+            centroid.pose.position = current;
             centroid.pose.orientation.w = 1.0;
             centroid.lifetime = rclcpp::Duration(0, 7e8);
             centroid.frame_locked = true;
             ma.markers.push_back(std::move(centroid));
 
-            // Label with ID
+            // Label (track ID)
             visualization_msgs::msg::Marker label;
             label.header.frame_id = frame_id;
             label.header.stamp = stamp;
             label.ns = "clusters_label";
-            label.id = id++;
+            label.id = t.id;
             label.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
             label.action = visualization_msgs::msg::Marker::ADD;
             label.scale.z = 0.25;
@@ -267,12 +280,15 @@ private:
             label.color.b = 0.1f;
             label.color.a = 1.0f;
             label.lifetime = rclcpp::Duration(0, 7e8);
-            label.pose.position = c.centroid;
+            label.pose.position = current;
             label.pose.position.z += 0.3;
             label.pose.orientation.w = 1.0;
-            label.text = (ids[i] >= 0) ? ("ID " + std::to_string(ids[i])) : "ID ?";
+            label.text = std::to_string(t.id);
             label.frame_locked = true;
             ma.markers.push_back(std::move(label));
+
+            // Increment ID for next marker
+            ++id;
         }
 
         marker_pub_->publish(ma);

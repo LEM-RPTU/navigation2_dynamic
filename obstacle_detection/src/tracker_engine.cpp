@@ -119,50 +119,43 @@ TrackerPredictionFrame TrackerEngine::update(const std::vector<BlobCluster> &clu
   const size_t K = std::max(M, N);
   const double BIG = 1e6;
 
-  std::vector<ClusterAssignment> assignments;
-  assignments.reserve(std::max(M, N));
-
-  // 1) If no tracks yet, birth all
+  // 1) If no tracks yet, birth all detections
   if (M == 0)
   {
-    frame.tracks.reserve(N);
+    tracks_.reserve(N);
     for (size_t j = 0; j < N; ++j)
     {
-      Track t;
+      ObstacleTrack t;
       t.id = next_id_++;
       t.history.push_back(clusters[j].centroid);
       cap_history(t.history);
       t.pred_t1 = t.history.back();
       t.velocity = geometry_msgs::msg::Vector3(); // 0 m/s
-      tracks_.push_back(t);
 
-      ClusterAssignment a{j, t.id, 0.0, true};
-      assignments.push_back(a);
+      // current output snapshot (detection)
+      t.position.clear();
+      t.position.push_back(clusters[j].centroid);
 
-      ObstacleTrack ot;
-      ot.id = t.id;
-      ot.position = {clusters[j].centroid}; // current at [0]
-      ot.history = t.history;               // includes current at back
-      ot.velocity = t.velocity;
-
-      geometry_msgs::msg::Vector3 heading{};
-      ot.heading = heading;
-      ot.is_dynamic = false;
-
-      // hull
-      ot.polygon.points.reserve(clusters[j].boundary.size());
+      // initial polygon from detection boundary
+      t.polygon.points.clear();
+      t.polygon.points.reserve(clusters[j].boundary.size());
       for (const auto &p : clusters[j].boundary)
       {
         geometry_msgs::msg::Point32 p32;
         p32.x = static_cast<float>(p.x);
         p32.y = static_cast<float>(p.y);
         p32.z = static_cast<float>(p.z);
-        ot.polygon.points.push_back(p32);
+        t.polygon.points.push_back(p32);
       }
 
-      frame.tracks.push_back(std::move(ot));
+      // heading/dynamic
+      t.heading = geometry_msgs::msg::Vector3();
+      t.is_dynamic = false;
+
+      tracks_.push_back(std::move(t));
     }
-    frame.assignments = std::move(assignments);
+
+    frame.tracks = tracks_; // snapshot of all active tracks
     return frame;
   }
 
@@ -176,7 +169,7 @@ TrackerPredictionFrame TrackerEngine::update(const std::vector<BlobCluster> &clu
   }
   std::vector<int> row2col = hungarian(C);
 
-  // 3) Collect matches within gate and flags
+  // 3) Collect matches within gate
   std::vector<int> matched_det_for_track(M, -1);
   std::vector<bool> det_matched(N, false);
   for (size_t i = 0; i < M; ++i)
@@ -198,40 +191,58 @@ TrackerPredictionFrame TrackerEngine::update(const std::vector<BlobCluster> &clu
   {
     if (!det_matched[j])
     {
-      Track t;
+      ObstacleTrack t;
       t.id = next_id_++;
       t.history.push_back(clusters[j].centroid);
       cap_history(t.history);
       t.pred_t1 = t.history.back();
       t.velocity = geometry_msgs::msg::Vector3(); // 0 m/s
-      tracks_.push_back(t);
+      t.missed = 0;
 
-      ClusterAssignment a{j, t.id, BIG, true};
-      assignments.push_back(a);
+      // snapshot
+      t.position.clear();
+      t.position.push_back(clusters[j].centroid);
+
+      // polygon from detection boundary
+      t.polygon.points.clear();
+      t.polygon.points.reserve(clusters[j].boundary.size());
+      for (const auto &p : clusters[j].boundary)
+      {
+        geometry_msgs::msg::Point32 p32;
+        p32.x = static_cast<float>(p.x);
+        p32.y = static_cast<float>(p.y);
+        p32.z = static_cast<float>(p.z);
+        t.polygon.points.push_back(p32);
+      }
+
+      // heading/dynamic
+      t.heading = geometry_msgs::msg::Vector3();
+      t.is_dynamic = false;
+
+      tracks_.push_back(std::move(t));
     }
   }
 
-  // 5) Age unmatched tracks (no observation this tick)
-  for (size_t i = 0; i < M; ++i)
-  {
-    if (matched_det_for_track[i] < 0)
-    {
-      tracks_[i].missed++;
-    }
-  }
-
-  // 6) Kinematics update for matched tracks AFTER appending new observation
+  // 5) Update matched/unmatched tracks
   const double inv_dt = (dt_sec > 1e-6) ? (1.0 / dt_sec) : 0.0;
+
   for (size_t i = 0; i < M; ++i)
   {
     int j = matched_det_for_track[i];
-    if (j < 0)
-      continue;
-
     auto &t = tracks_[i];
+
+    if (j < 0)
+    {
+      // Unmatched: age and keep predicted position as snapshot
+      t.missed++;
+      t.position.clear();
+      t.position.push_back(t.pred_t1); // one-cycle-lag prediction
+      continue;
+    }
+
+    // Matched: append new observation and update kinematics
     const auto &z = clusters[static_cast<size_t>(j)].centroid;
 
-    // append new observation
     geometry_msgs::msg::Vector3 v{};
     if (!t.history.empty())
     {
@@ -248,19 +259,39 @@ TrackerPredictionFrame TrackerEngine::update(const std::vector<BlobCluster> &clu
     // one-cycle-lag stub
     t.pred_t1 = t.history.back();
 
-    // emit assignment now (WITHOUT velocity, it's in track data)
-    ClusterAssignment a;
-    a.cluster_index = static_cast<size_t>(j);
-    a.id = t.id;
-    a.cost = C[i][static_cast<size_t>(j)];
-    a.new_track = false;
-    assignments.push_back(a);
+    // heading
+    geometry_msgs::msg::Vector3 heading{};
+    const double n = std::hypot(t.velocity.x, t.velocity.y);
+    if (n > 1e-6)
+    {
+      heading.x = t.velocity.x / n;
+      heading.y = t.velocity.y / n;
+    }
+    heading.z = 0.0;
+    t.heading = heading;
+    t.is_dynamic = (n > 0.2); // > 0.2 m/s
+
+    // polygon from the matched cluster
+    t.polygon.points.clear();
+    t.polygon.points.reserve(clusters[static_cast<size_t>(j)].boundary.size());
+    for (const auto &p : clusters[static_cast<size_t>(j)].boundary)
+    {
+      geometry_msgs::msg::Point32 p32;
+      p32.x = static_cast<float>(p.x);
+      p32.y = static_cast<float>(p.y);
+      p32.z = static_cast<float>(p.z);
+      t.polygon.points.push_back(p32);
+    }
+
+    // snapshot position = detection
+    t.position.clear();
+    t.position.push_back(z);
   }
 
-  // 7) Retire aged-out tracks
+  // 6) Retire aged-out tracks
   std::vector<int64_t> retired;
   tracks_.erase(std::remove_if(tracks_.begin(), tracks_.end(),
-                               [&](const Track &t)
+                               [&](const ObstacleTrack &t)
                                {
                                  if (t.missed > max_missed_)
                                  {
@@ -271,65 +302,8 @@ TrackerPredictionFrame TrackerEngine::update(const std::vector<BlobCluster> &clu
                                }),
                 tracks_.end());
 
-  // 8) Package frame tracks (current snapshot)
-  frame.tracks.reserve(assignments.size());
-  for (const auto &a : assignments)
-  {
-    // find current centroid and hull from cluster
-    const auto &c = clusters[a.cluster_index];
-
-    // find matching internal track by id
-    const Track *ti = nullptr;
-    for (const auto &t : tracks_)
-    {
-      if (t.id == a.id)
-      {
-        ti = &t;
-        break;
-      }
-    }
-    if (!ti)
-      continue;
-
-    ObstacleTrack ot;
-    ot.id = ti->id;
-    ot.position = {c.centroid};
-    ot.history = ti->history;
-    ot.velocity = ti->velocity;
-
-    geometry_msgs::msg::Vector3 heading{};
-    const double n = std::hypot(ot.velocity.x, ot.velocity.y);
-    if (n > 1e-6)
-    {
-      heading.x = ot.velocity.x / n;
-      heading.y = ot.velocity.y / n;
-    }
-    else
-    {
-      heading.x = heading.y = 0.0;
-    }
-    heading.z = 0.0;
-    ot.heading = heading;
-
-    // Mark as dynamic if significant velocity
-    ot.is_dynamic = (n > 0.2); // > 0.2 m/s
-
-    // Add polygon from cluster
-    ot.polygon.points.reserve(clusters[a.cluster_index].boundary.size());
-    for (const auto &p : clusters[a.cluster_index].boundary)
-    {
-      geometry_msgs::msg::Point32 p32;
-      p32.x = static_cast<float>(p.x);
-      p32.y = static_cast<float>(p.y);
-      p32.z = static_cast<float>(p.z);
-      ot.polygon.points.push_back(p32);
-    }
-
-    frame.tracks.push_back(std::move(ot));
-  }
-
-  // Store assignments in the frame for downstream consumption
-  frame.assignments = std::move(assignments);
+  // 7) Package snapshot of all active tracks
+  frame.tracks = tracks_;
   frame.retired_tracks = std::move(retired);
 
   return frame;
