@@ -42,3 +42,31 @@
         cost_scaling_factor: 20.0
         inflation_radius: 1.0
         publish_inflated: true
+
+/**/dynamic_obstacle_node:
+  ros__parameters:
+    tracking.gate_distance: 1.5
+    tracking.max_missed: 3
+    prediction.future_len: 5
+    prediction.timeout_ms: 150
+    prediction.timer_period_ms: 200
+    visualization.show_covariance: true
+    visualization.show_trajectory: true
+
+/**/predictor_service_node:
+  ros__parameters:
+    model_type: cv          # cv | kf | var
+    cv:
+      history_window: 20
+      min_history_length: 3
+      velocity_window: 4
+      default_dt: 0.5
+      min_var: 0.02
+    kf:
+      default_dt: 0.5
+      process_noise: 0.05
+      measurement_noise: 0.02
+    var:
+      order: 2
+      max_history: 40
+      default_dt: 0.5

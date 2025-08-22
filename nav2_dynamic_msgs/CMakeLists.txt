@@ -32,6 +32,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ObstacleArray.msg"
   "msg/PredictionRequest.msg"
   "msg/PredictionResponse.msg"
+  "srv/PredictObstacles.srv"
   DEPENDENCIES std_msgs sensor_msgs unique_identifier_msgs
  )
 
