@@ -53,9 +53,8 @@ public:
         // Publishers
         predict_client_ = this->create_client<nav2_dynamic_msgs::srv::PredictObstacles>(
             "predict_obstacles", rmw_qos_profile_services_default, client_cb_group_);
-            
+
         obstacle_pub_ = this->create_publisher<nav2_dynamic_msgs::msg::ObstacleArray>("obstacles_array", 10);
-        marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("cluster_markers", 10);
 
         // Periodic processing
         timer_ = this->create_wall_timer(
@@ -65,9 +64,10 @@ public:
 
         RCLCPP_INFO(this->get_logger(), "Dynamic obstacle node started");
     }
-    
+
     // Helper to add costmap node to executor in main
-    std::shared_ptr<nav2_costmap_2d::Costmap2DROS> get_costmap_ros() {
+    std::shared_ptr<nav2_costmap_2d::Costmap2DROS> get_costmap_ros()
+    {
         return costmap_ros_;
     }
 
@@ -77,7 +77,6 @@ private:
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::CallbackGroup::SharedPtr timer_cb_group_;
     rclcpp::CallbackGroup::SharedPtr client_cb_group_;
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
     rclcpp::Publisher<nav2_dynamic_msgs::msg::ObstacleArray>::SharedPtr obstacle_pub_;
     rclcpp::Client<nav2_dynamic_msgs::srv::PredictObstacles>::SharedPtr predict_client_;
 
@@ -104,9 +103,6 @@ private:
 
         // 4) Publish obstacle array (using track data directly)
         publishObstacleArray(tr, costmap_ros_->getGlobalFrameID());
-
-        // 5) Visualization
-        publishClusterMarkers(tr, costmap_ros_->getGlobalFrameID());
     }
 
     void publishPredictionRequest(TrackerPredictionFrame &tr)
@@ -158,7 +154,8 @@ private:
 
         // Use direct wait_for instead of spin_until_future_complete
         // This avoids the "already added to an executor" error
-        if (future.wait_for(150ms) != std::future_status::ready) {
+        if (future.wait_for(150ms) != std::future_status::ready)
+        {
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Prediction request timed out");
             return;
         }
@@ -170,7 +167,8 @@ private:
         {
 
             auto it = std::find_if(tr.tracks.begin(), tr.tracks.end(),
-                                   [&](auto &trk) { return trk.id == pred_ob.id; });
+                                   [&](auto &trk)
+                                   { return trk.id == pred_ob.id; });
             if (it == tr.tracks.end())
                 continue;
 
@@ -190,7 +188,7 @@ private:
                 // No current position stored; just take predictions
                 it->position = pred_ob.position;
             }
-            
+
             // Optionally update kinematics if provided
             if (pred_ob.velocity.x != 0.0 || pred_ob.velocity.y != 0.0 || pred_ob.velocity.z != 0.0)
                 it->velocity = pred_ob.velocity;
@@ -205,7 +203,7 @@ private:
                 it->velocity_covariance = pred_ob.velocity_covariance;
             }
         }
-        
+
         RCLCPP_INFO(this->get_logger(), "Prediction response processed successfully");
     }
 
@@ -255,133 +253,23 @@ private:
 
         obstacle_pub_->publish(msg);
     }
-
-    void publishClusterMarkers(const TrackerPredictionFrame &tr,
-                               const std::string &frame_id)
-    {
-
-        visualization_msgs::msg::MarkerArray ma;
-        rclcpp::Time stamp = tr.stamp;
-
-        // Clear previous markers
-        visualization_msgs::msg::Marker clear;
-        clear.header.frame_id = frame_id;
-        clear.header.stamp = stamp;
-        clear.ns = "clusters";
-        clear.id = 0;
-        clear.action = visualization_msgs::msg::Marker::DELETEALL;
-        ma.markers.push_back(clear);
-
-        int id = 1;
-
-        for (const auto &t : tr.tracks)
-        {
-            // Current position (position[0] = detection or prediction)
-            geometry_msgs::msg::Point current{};
-            if (!t.position.empty())
-            {
-                current = t.position.front();
-            }
-
-            // Hull from track.polygon (Point32 -> Point)
-            std::vector<geometry_msgs::msg::Point> hull_points;
-            hull_points.reserve(t.polygon.points.size() + 1);
-            for (const auto &p32 : t.polygon.points)
-            {
-                geometry_msgs::msg::Point p;
-                p.x = p32.x;
-                p.y = p32.y;
-                p.z = p32.z;
-                hull_points.push_back(p);
-            }
-            if (hull_points.size() >= 3)
-            {
-                hull_points.push_back(hull_points.front()); // close loop
-            }
-
-            // Hull marker
-            visualization_msgs::msg::Marker hull;
-            hull.header.frame_id = frame_id;
-            hull.header.stamp = stamp;
-            hull.ns = "clusters_hull";
-            hull.id = t.id;
-            hull.type = visualization_msgs::msg::Marker::LINE_STRIP;
-            hull.action = visualization_msgs::msg::Marker::ADD;
-            hull.scale.x = 0.03;
-            hull.color.r = 1.0f;
-            hull.color.g = 0.3f;
-            hull.color.b = 0.1f;
-            hull.color.a = 0.9f;
-            hull.lifetime = rclcpp::Duration(0, 7e8);
-            hull.points = std::move(hull_points);
-            hull.frame_locked = true;
-            ma.markers.push_back(std::move(hull));
-
-            // Centroid marker (current track position)
-            visualization_msgs::msg::Marker centroid;
-            centroid.header.frame_id = frame_id;
-            centroid.header.stamp = stamp;
-            centroid.ns = "clusters_centroid";
-            centroid.id = t.id;
-            centroid.type = visualization_msgs::msg::Marker::SPHERE;
-            centroid.action = visualization_msgs::msg::Marker::ADD;
-            centroid.scale.x = 0.12;
-            centroid.scale.y = 0.12;
-            centroid.scale.z = 0.12;
-            centroid.color.r = 0.2f;
-            centroid.color.g = 1.0f;
-            centroid.color.b = 0.2f;
-            centroid.color.a = 0.95f;
-            centroid.pose.position = current;
-            centroid.pose.orientation.w = 1.0;
-            centroid.lifetime = rclcpp::Duration(0, 7e8);
-            centroid.frame_locked = true;
-            ma.markers.push_back(std::move(centroid));
-
-            // Label (track ID)
-            visualization_msgs::msg::Marker label;
-            label.header.frame_id = frame_id;
-            label.header.stamp = stamp;
-            label.ns = "clusters_label";
-            label.id = t.id;
-            label.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-            label.action = visualization_msgs::msg::Marker::ADD;
-            label.scale.z = 0.25;
-            label.color.r = 1.0f;
-            label.color.g = 0.9f;
-            label.color.b = 0.1f;
-            label.color.a = 1.0f;
-            label.lifetime = rclcpp::Duration(0, 7e8);
-            label.pose.position = current;
-            label.pose.position.z += 0.3;
-            label.pose.orientation.w = 1.0;
-            label.text = std::to_string(t.id);
-            label.frame_locked = true;
-            ma.markers.push_back(std::move(label));
-
-            // Increment ID for next marker
-            ++id;
-        }
-
-        marker_pub_->publish(ma);
-    }
 };
 
 int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<DynamicObstacleNode>();
-    
+
     // Add both nodes to the executor
     rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 3);
     executor.add_node(node);
-    
+
     // Add costmap node to the executor
     auto costmap_node = node->get_costmap_ros();
     executor.add_node(costmap_node->get_node_base_interface());
-    
+
     executor.spin();
-    
+
     rclcpp::shutdown();
     return 0;
 }

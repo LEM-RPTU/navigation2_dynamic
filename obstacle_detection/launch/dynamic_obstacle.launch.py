@@ -48,11 +48,21 @@ def generate_launch_description():
         parameters=[params_file]
     )
 
+    obstacle_viz_node = Node(
+        package='obstacle_detection',
+        executable='obstacle_viz_node',
+        name='obstacle_viz_node',
+        output='screen',
+        namespace=namespace,
+        parameters=[params_file]
+    )
+
     # Launch Description
     ld = LaunchDescription()
     ld.add_action(declare_namespace_cmd)
     ld.add_action(declare_params_file_cmd)
     ld.add_action(odpp_node)
     ld.add_action(predictor_node)
+    ld.add_action(obstacle_viz_node)
     return ld
 

@@ -48,5 +48,9 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}
 )
 
+add_executable(obstacle_viz_node src/obstacle_viz_node.cpp)
+ament_target_dependencies(obstacle_viz_node rclcpp nav2_dynamic_msgs visualization_msgs geometry_msgs)
+install(TARGETS obstacle_viz_node DESTINATION lib/${PROJECT_NAME})
+
 ament_export_include_directories(include)
 ament_package()
