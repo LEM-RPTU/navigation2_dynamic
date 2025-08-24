@@ -1,4 +1,3 @@
-
 # navigation2\_dynamic
 
 Dynamic obstacle **detection → tracking → prediction** for Nav2 (ROS 2).
@@ -8,6 +7,7 @@ This repo provides:
 * **ODPP**: Obstacle Detection, Persistent Tracking, and Publishing node
 * **Predictor service** (CV/KF/VAR stubs) for short-horizon trajectory forecasts
 * **Custom messages & service** for obstacle exchange
+* **Visualization node** for RViz markers (separate from core processing)
 
 > Target ROS 2: Humble or newer. Tested with rolling costmaps, TF `map↔odom`, and Nav2.
 
@@ -18,9 +18,10 @@ This repo provides:
 ```
 lem-rptu-navigation2_dynamic/
 ├── foreground_mask_layer/         # costmap2d plugin (C++)
-├── nav2_dynamic_interface/             # msgs + srv
+├── nav2_dynamic_interface/        # msgs + srv
 ├── obstacle_detection/            # ODPP node (C++)
-└── obstacle_predictor/            # predictor service (Python)
+├── obstacle_predictor/            # predictor service (Python)
+└── obstacle_visualization/        # visualization node (C++)
 ```
 
 ---
@@ -32,7 +33,7 @@ lem-rptu-navigation2_dynamic/
 3. **TrackerEngine** keeps persistent IDs (Hungarian assignment, gating, history, velocity/heading).
 4. **Predictor service** returns `t+N` points per ID (CV by default; KF/VAR placeholders).
 5. **ObstacleArray** published with current + predicted positions, kinematics, polygon, covariances.
-6. **RViz** markers visualize hulls, centroids, IDs, trajectories, covariance ellipses.
+6. **Visualization node** generates RViz markers for hulls, centroids, IDs, trajectories, covariance ellipses.
 
 ---
 
@@ -91,13 +92,12 @@ Executable: `dynamic_obstacle_node`
 * Publishes:
 
   * `obstacles_array` (`nav2_dynamic_interface/ObstacleArray`)
-  * `cluster_markers` (`visualization_msgs/MarkerArray`)
 
 Asynchronously calls `predict_obstacles` service and **republishes** with predictions when available.
 
 **Important topics**
 
-* **Pub:** `obstacles_array`, `cluster_markers`
+* **Pub:** `obstacles_array`
 * **Sub (via Costmap2DROS/ObstacleLayer):** scans, TF, map, etc.
 
 **Selected params**
@@ -143,6 +143,18 @@ predictor_service_node:
       default_dt: 0.5
 ```
 
+### 5) `obstacle_visualization` (C++)
+
+Executable: `obstacle_viz_node`
+
+* Subscribes to `obstacles_array` and generates RViz-friendly visualization
+* Publishes marker arrays for centroids, trajectories, hulls, etc.
+* Decouples visualization from core detection/tracking for better resource management
+
+**Topics**
+* **Sub:** `obstacles_array`
+* **Pub:** `cluster_markers`
+
 ---
 
 ## Build & install
@@ -158,7 +170,7 @@ git clone -b dev https://github.com/LEM-RPTU/navigation2_dynamic.git lem-rptu-na
 cd ..
 colcon build --symlink-install \
   --packages-select \
-    foreground_mask_layer nav2_dynamic_interface obstacle_detection obstacle_predictor
+    foreground_mask_layer nav2_dynamic_interface obstacle_detection obstacle_predictor obstacle_visualization
 
 # source
 source install/setup.bash
@@ -174,7 +186,7 @@ source install/setup.bash
 
 ## Launch
 
-A combined launch starts the ODPP node and predictor service under a namespace:
+A combined launch starts the ODPP node, predictor service, and visualization under a namespace:
 
 ```bash
 ros2 launch obstacle_detection dynamic_obstacle.launch.py \
@@ -185,13 +197,13 @@ ros2 launch obstacle_detection dynamic_obstacle.launch.py \
 Expected outputs:
 
 * `/<ns>/dynamic_obstacle_node/obstacles_array`
-* `/<ns>/dynamic_obstacle_node/cluster_markers`
+* `/<ns>/obstacle_viz_node/cluster_markers`
 * Service `/<ns>/predictor_node/predict_obstacles`
 
 **Frame IDs**
 
 * Costmap uses `map` as `global_frame`; ensure TF `map↔odom` exists.
-* Messages carry the costmap’s `global_frame_id`.
+* Messages carry the costmap's `global_frame_id`.
 
 
 ## Configuration tips
@@ -200,8 +212,7 @@ Expected outputs:
 * **Tracking gate:** `tracking.gate_distance` bounds associations; tune for your costmap resolution and dynamics.
 * **History length:** The tracker internally caps history (see `TrackerEngine`); the predictor separately windows history.
 * **Prediction cadence:** ODPP publishes immediately, then republishes when the async prediction response arrives.
-
-
+* **Visualization:** Run on a separate executor to avoid slowing detection/tracking.
 
 ## Visualization (RViz)
 
@@ -250,6 +261,7 @@ Response:
   * `Costmap2DROS` spins in its own thread.
   * ODPP timer runs at 500 ms (default); prediction requests are **async**, response updates and republish.
   * Predictor uses a worker queue with multiple threads.
+  * MultiThreadedExecutor handles costmap updates, timer callbacks, and prediction responses efficiently.
 
 ## Known limitations (dev)
 
@@ -259,11 +271,14 @@ Response:
 
 ## Roadmap
 
-* Implement proper **Kalman Filter** (CTRVs/CTRA optional) with tuned Q/R.
-* Implement true **VAR(p)** multi-step with covariance propagation.
-* Unit/integration tests (CI).
-* Expand RViz helpers (poses, arrows).
-* Example bag & Gazebo simulation world.
+* **Full UUID support** - Replace integer IDs with proper UUID implementation for robust tracking across nodes
+* **Static/dynamic classification** - Add capability to distinguish truly dynamic obstacles from temporarily unclassified static ones
+* **Ego motion compensation** - Implement proper ego-vehicle motion filtering to improve dynamic object identification
+* Implement proper **Kalman Filter** (CTRVs/CTRA optional) with tuned Q/R
+* Implement true **VAR(p)** multi-step with covariance propagation
+* Unit/integration tests (CI)
+* Expand RViz helpers (poses, arrows)
+* Example bag & Gazebo simulation world
 
 ---
 
@@ -275,7 +290,7 @@ PRs and issues welcome. Please follow ROS 2 style guides, keep functions small a
 
 * **Top-level**: Apache-2.0 (see `LICENSE`).
 * Packages may declare **BSD-3-Clause** or Apache-2.0 in their `package.xml`.
-  Always check the package’s own `package.xml` for the definitive license.
+  Always check the package's own `package.xml` for the definitive license.
 
 
 ## Acknowledgments
