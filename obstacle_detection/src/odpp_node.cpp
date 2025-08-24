@@ -16,9 +16,9 @@
 #include <string>
 #include <cmath>
 
-#include "nav2_dynamic_msgs/msg/obstacle_array.hpp"
-#include "nav2_dynamic_msgs/msg/obstacle.hpp"
-#include "nav2_dynamic_msgs/srv/predict_obstacles.hpp"
+#include "nav2_dynamic_interface/msg/obstacle_array.hpp"
+#include "nav2_dynamic_interface/msg/obstacle.hpp"
+#include "nav2_dynamic_interface/srv/predict_obstacles.hpp"
 #include "cluster_engine.hpp"
 #include "tracker_engine.hpp"
 #include "types.hpp"
@@ -51,10 +51,10 @@ public:
         tracker_engine_.set_max_missed(max_missed);
 
         // Publishers
-        predict_client_ = this->create_client<nav2_dynamic_msgs::srv::PredictObstacles>(
+        predict_client_ = this->create_client<nav2_dynamic_interface::srv::PredictObstacles>(
             "predict_obstacles", rmw_qos_profile_services_default, client_cb_group_);
 
-        obstacle_pub_ = this->create_publisher<nav2_dynamic_msgs::msg::ObstacleArray>("obstacles_array", 10);
+        obstacle_pub_ = this->create_publisher<nav2_dynamic_interface::msg::ObstacleArray>("obstacles_array", 10);
 
         // Periodic processing
         timer_ = this->create_wall_timer(
@@ -77,8 +77,8 @@ private:
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::CallbackGroup::SharedPtr timer_cb_group_;
     rclcpp::CallbackGroup::SharedPtr client_cb_group_;
-    rclcpp::Publisher<nav2_dynamic_msgs::msg::ObstacleArray>::SharedPtr obstacle_pub_;
-    rclcpp::Client<nav2_dynamic_msgs::srv::PredictObstacles>::SharedPtr predict_client_;
+    rclcpp::Publisher<nav2_dynamic_interface::msg::ObstacleArray>::SharedPtr obstacle_pub_;
+    rclcpp::Client<nav2_dynamic_interface::srv::PredictObstacles>::SharedPtr predict_client_;
 
     ClusterEngine cluster_engine_;
     TrackerEngine tracker_engine_;
@@ -122,7 +122,7 @@ private:
             return;
         }
 
-        auto req = std::make_shared<nav2_dynamic_msgs::srv::PredictObstacles::Request>();
+        auto req = std::make_shared<nav2_dynamic_interface::srv::PredictObstacles::Request>();
         req->pre_prediction_header.stamp = tr.stamp;
         req->pre_prediction_header.frame_id = costmap_ros_->getGlobalFrameID();
         req->prediction_steps = future_len_;
@@ -130,7 +130,7 @@ private:
 
         for (const auto &track : tr.tracks)
         {
-            nav2_dynamic_msgs::msg::Obstacle ob;
+            nav2_dynamic_interface::msg::Obstacle ob;
             ob.id = track.id;
             ob.uuid = track.uuid;
             ob.position.clear();
@@ -209,14 +209,14 @@ private:
 
     void publishObstacleArray(const TrackerPredictionFrame &tr, const std::string &frame_id)
     {
-        nav2_dynamic_msgs::msg::ObstacleArray msg;
+        nav2_dynamic_interface::msg::ObstacleArray msg;
         msg.header.stamp = tr.stamp;
         msg.header.frame_id = frame_id;
         msg.obstacles.reserve(tr.tracks.size());
 
         for (const auto &track : tr.tracks)
         {
-            nav2_dynamic_msgs::msg::Obstacle ob;
+            nav2_dynamic_interface::msg::Obstacle ob;
 
             // ID and score
             ob.id = track.id;

@@ -1,5 +1,5 @@
 #include "rclcpp/rclcpp.hpp"
-#include "nav2_dynamic_msgs/msg/obstacle_array.hpp"
+#include "nav2_dynamic_interface/msg/obstacle_array.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
 #include "geometry_msgs/msg/point.hpp"
 
@@ -10,17 +10,17 @@ public:
         : Node("obstacle_viz_node")
     {
         marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("cluster_markers", 10);
-        sub_ = this->create_subscription<nav2_dynamic_msgs::msg::ObstacleArray>(
+        sub_ = this->create_subscription<nav2_dynamic_interface::msg::ObstacleArray>(
             "obstacles_array", 10,
             std::bind(&ObstacleVizNode::onObstacles, this, std::placeholders::_1));
         RCLCPP_INFO(get_logger(), "Obstacle viz node started");
     }
 
 private:
-    rclcpp::Subscription<nav2_dynamic_msgs::msg::ObstacleArray>::SharedPtr sub_;
+    rclcpp::Subscription<nav2_dynamic_interface::msg::ObstacleArray>::SharedPtr sub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
 
-    void onObstacles(const nav2_dynamic_msgs::msg::ObstacleArray::SharedPtr msg)
+    void onObstacles(const nav2_dynamic_interface::msg::ObstacleArray::SharedPtr msg)
     {
         visualization_msgs::msg::MarkerArray ma;
         rclcpp::Time stamp = msg->header.stamp;

@@ -15,7 +15,7 @@
   <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
   <depend>unique_identifier_msgs</depend>
-  <depend>nav2_dynamic_msgs</depend>
+  <depend>nav2_dynamic_interface</depend>
 
   <export>
     <build_type>ament_cmake</build_type>

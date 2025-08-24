@@ -14,8 +14,8 @@ from rclpy.executors import MultiThreadedExecutor
 
 from geometry_msgs.msg import Point, Vector3
 from std_msgs.msg import Header
-from nav2_dynamic_msgs.msg import Obstacle
-from nav2_dynamic_msgs.srv import PredictObstacles
+from nav2_dynamic_interface.msg import Obstacle
+from nav2_dynamic_interface.srv import PredictObstacles
 
 class PredictorServiceNode(Node):
     def __init__(self):

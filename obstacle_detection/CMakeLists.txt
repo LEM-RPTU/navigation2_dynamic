@@ -10,7 +10,7 @@ find_package(rclcpp_lifecycle REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
-find_package(nav2_dynamic_msgs REQUIRED)
+find_package(nav2_dynamic_interface REQUIRED)
 find_package(unique_identifier_msgs REQUIRED)
 
 add_executable(dynamic_obstacle_node
@@ -30,7 +30,7 @@ ament_target_dependencies(dynamic_obstacle_node
   nav2_costmap_2d
   geometry_msgs
   visualization_msgs
-  nav2_dynamic_msgs
+  nav2_dynamic_interface
   unique_identifier_msgs
 )
 
@@ -49,7 +49,7 @@ install(DIRECTORY
 )
 
 add_executable(obstacle_viz_node src/obstacle_viz_node.cpp)
-ament_target_dependencies(obstacle_viz_node rclcpp nav2_dynamic_msgs visualization_msgs geometry_msgs)
+ament_target_dependencies(obstacle_viz_node rclcpp nav2_dynamic_interface visualization_msgs geometry_msgs)
 install(TARGETS obstacle_viz_node DESTINATION lib/${PROJECT_NAME})
 
 ament_export_include_directories(include)

@@ -18,7 +18,7 @@ This repo provides:
 ```
 lem-rptu-navigation2_dynamic/
 ├── foreground_mask_layer/         # costmap2d plugin (C++)
-├── nav2_dynamic_msgs/             # msgs + srv
+├── nav2_dynamic_interface/             # msgs + srv
 ├── obstacle_detection/            # ODPP node (C++)
 └── obstacle_predictor/            # predictor service (Python)
 ```
@@ -56,7 +56,7 @@ foreground_mask_layer:
   observation_sources: scan    # pass-through to ObstacleLayer
 ```
 
-### 2) `nav2_dynamic_msgs`
+### 2) `nav2_dynamic_interface`
 
 Interfaces shared across nodes.
 
@@ -90,7 +90,7 @@ Executable: `dynamic_obstacle_node`
 * Tracks across ticks (Hungarian assignment, gating radius, missed counts)
 * Publishes:
 
-  * `obstacles_array` (`nav2_dynamic_msgs/ObstacleArray`)
+  * `obstacles_array` (`nav2_dynamic_interface/ObstacleArray`)
   * `cluster_markers` (`visualization_msgs/MarkerArray`)
 
 Asynchronously calls `predict_obstacles` service and **republishes** with predictions when available.
@@ -158,7 +158,7 @@ git clone -b dev https://github.com/LEM-RPTU/navigation2_dynamic.git lem-rptu-na
 cd ..
 colcon build --symlink-install \
   --packages-select \
-    foreground_mask_layer nav2_dynamic_msgs obstacle_detection obstacle_predictor
+    foreground_mask_layer nav2_dynamic_interface obstacle_detection obstacle_predictor
 
 # source
 source install/setup.bash
@@ -215,7 +215,7 @@ Add these displays:
 ## Message/service contract (quick view)
 
 ```text
-Topic: obstacles_array (nav2_dynamic_msgs/ObstacleArray)
+Topic: obstacles_array (nav2_dynamic_interface/ObstacleArray)
   header.stamp, header.frame_id
   obstacles[*]:
     id, uuid
@@ -227,7 +227,7 @@ Topic: obstacles_array (nav2_dynamic_msgs/ObstacleArray)
 ```
 
 ```text
-Service: predict_obstacles (nav2_dynamic_msgs/srv/PredictObstacles)
+Service: predict_obstacles (nav2_dynamic_interface/srv/PredictObstacles)
 Request:
   pre_prediction_header.stamp, .frame_id
   prediction_steps: uint32

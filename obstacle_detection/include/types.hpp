@@ -24,7 +24,7 @@ struct BlobCluster
 };
 
 // Shared internal track data (tracker <-> predictor),
-// aligned with nav2_dynamic_msgs/Obstacle fields.
+// aligned with nav2_dynamic_interface/Obstacle fields.
 struct ObstacleTrack
 {
   // Message-aligned fields
