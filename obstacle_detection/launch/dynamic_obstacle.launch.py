@@ -11,18 +11,18 @@ def generate_launch_description():
     obstacle_detection_share = get_package_share_directory('obstacle_detection')
 
     # Declare Launch Arguments
-    declare_namespace_cmd = DeclareLaunchArgument(
-        'namespace',
+    declare_robot_namespace_cmd = DeclareLaunchArgument(
+        'robot_namespace',
         default_value='fleet/skid_steered_two_lidars_0/',
-        description='Top-level namespace')
-    
+        description='Top-level robot namespace')
+
     declare_params_file_cmd = DeclareLaunchArgument(
         'params_file',
         default_value=os.path.join(obstacle_detection_share, 'config', 'odpp.yaml'),
         description='Full path to the ROS2 parameters file')
     
     # Setting Launch Configuration
-    namespace = LaunchConfiguration('namespace')
+    robot_namespace = LaunchConfiguration('robot_namespace')
     params_file = LaunchConfiguration('params_file')
 
 
@@ -32,7 +32,7 @@ def generate_launch_description():
             executable='dynamic_obstacle_node',
             name='dynamic_obstacle_node',
             output='screen',
-            namespace = namespace,
+            namespace = robot_namespace,
             parameters = [params_file],
             remappings=[
                 ('/tf', 'tf'),
@@ -44,7 +44,7 @@ def generate_launch_description():
         executable='predictor_node',
         name='predictor_node',
         output='screen',
-        namespace=namespace,
+        namespace=robot_namespace,
         parameters=[params_file]
     )
 
@@ -53,13 +53,13 @@ def generate_launch_description():
         executable='obstacle_viz_node',
         name='obstacle_viz_node',
         output='screen',
-        namespace=namespace,
+        namespace=robot_namespace,
         parameters=[params_file]
     )
 
     # Launch Description
     ld = LaunchDescription()
-    ld.add_action(declare_namespace_cmd)
+    ld.add_action(declare_robot_namespace_cmd)
     ld.add_action(declare_params_file_cmd)
     ld.add_action(odpp_node)
     ld.add_action(predictor_node)
