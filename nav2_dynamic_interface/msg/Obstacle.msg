@@ -1,8 +1,13 @@
-unique_identifier_msgs/UUID uuid         # For static obstacles, fill with an invalid value (all zeros)
-int64 id                            # Unique identifier for the obstacle, used for tracking.
-geometry_msgs/Point[] position          # First entry is current centroid, others are VAR predictions.
-geometry_msgs/Vector3 velocity          # Zero for static obstacles.
-geometry_msgs/Vector3 heading           # Zero for static obstacles.
-geometry_msgs/Polygon polygon           # Convex hull of the obstacle.
-float64[4] position_covariance          # Position covariance (pad VAR MSE to 9 values)
-float64[4] velocity_covariance          # Velocity covariance (if dynamic, nonzero)
+std_msgs/Header header
+unique_identifier_msgs/UUID uuid             # For static obstacles, fill with an invalid value (all zeros)
+int64 id                                     # Unique identifier for the obstacle, used for tracking
+#
+# time difference between positions/velocities relative to current header/time stamp, i.e.
+# position[0] would be position at header/time stamp
+# position[1] would be position at header/time stamp + delta_time 
+# position[2] would be position at header/time stamp + 2*delta_time ...
+builtin_interfaces/Duration delta_time    
+# 
+geometry_msgs/PoseWithCovariance[] position  
+geometry_msgs/TwistWithCovariance[] velocity 
+geometry_msgs/Polygon polygon                # Convex hull of the obstacle.
