@@ -62,6 +62,11 @@ public:
             std::bind(&DynamicObstacleNode::processCostmap, this),
             timer_cb_group_);
 
+        // Set FIXED prediction interval (200ms for future predictions)
+        double pred_dt_sec = this->declare_parameter<double>("prediction.delta_time", 0.2);
+        prediction_dt_.sec = static_cast<int32_t>(pred_dt_sec);
+        prediction_dt_.nanosec = static_cast<uint32_t>((pred_dt_sec - prediction_dt_.sec) * 1e9);
+
         RCLCPP_INFO(this->get_logger(), "Dynamic obstacle node started");
     }
 
@@ -84,170 +89,130 @@ private:
     TrackerEngine tracker_engine_;
     int future_len_{5};
 
+    // Cache predictor response for publishing
+    std::unordered_map<int64_t, nav2_dynamic_interface::msg::Obstacle> cached_predictions_;
+    rclcpp::Time last_update_time_;
+    builtin_interfaces::msg::Duration last_delta_time_;
+
+    // Prediction interval (CONSTANT)
+    builtin_interfaces::msg::Duration prediction_dt_;
+
     void processCostmap()
     {
         auto costmap = costmap_ros_->getCostmap();
-        if (!costmap)
-            return;
-
         const unsigned char cost_threshold = nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE;
 
-        // 1) Clustering
         std::vector<BlobCluster> clusters = cluster_engine_.extract(costmap, cost_threshold);
 
-        // 2) Tracking with TrackerPredictionFrame
-        TrackerPredictionFrame tr = tracker_engine_.update(clusters);
+        // Update tracker → get tracks with IDs assigned to blobs
+        std::vector<ObstacleTrack> tracks = tracker_engine_.update(clusters);
 
-        // 3) Publish prediction request
-        publishPredictionRequest(tr);
+        rclcpp::Time now = this->get_clock()->now();
 
-        // 4) Publish obstacle array (using track data directly)
-        publishObstacleArray(tr, costmap_ros_->getGlobalFrameID());
+        // Send to predictor (uses FIXED prediction_dt_ for future spacing)
+        publishPredictionRequest(tracks, prediction_dt_, now);
+
+        // Publish obstacles (uses same FIXED dt)
+        publishObstacleArray(tracks, prediction_dt_, now, costmap_ros_->getGlobalFrameID());
     }
 
-    void publishPredictionRequest(TrackerPredictionFrame &tr)
+    void publishPredictionRequest(const std::vector<ObstacleTrack> &tracks,
+                                  const builtin_interfaces::msg::Duration &dt_prediction,
+                                  const rclcpp::Time &stamp)
     {
         using namespace std::chrono_literals;
 
         if (!predict_client_ || !predict_client_->service_is_ready())
         {
-            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 5000, "Prediction service not available");
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Prediction service not ready");
             return;
         }
 
-        // Skip if no tracks (no clusters / nothing to predict)
-        if (tr.tracks.empty())
+        if (tracks.empty())
         {
-            RCLCPP_DEBUG(this->get_logger(), "Skip prediction: no tracks present");
+            RCLCPP_DEBUG(get_logger(), "No tracks to predict");
             return;
         }
 
         auto req = std::make_shared<nav2_dynamic_interface::srv::PredictObstacles::Request>();
-        req->pre_prediction_header.stamp = tr.stamp;
+        req->pre_prediction_header.stamp = stamp;
         req->pre_prediction_header.frame_id = costmap_ros_->getGlobalFrameID();
         req->prediction_steps = future_len_;
-        req->obstacles_past.reserve(tr.tracks.size());
 
-        for (const auto &track : tr.tracks)
+        for (const auto &track : tracks)
         {
             nav2_dynamic_interface::msg::Obstacle ob;
+            ob.header.stamp = stamp;
+            ob.header.frame_id = costmap_ros_->getGlobalFrameID();
             ob.id = track.id;
             ob.uuid = track.uuid;
-            ob.position.clear();
-            ob.position.reserve(track.history.size());
-            for (size_t i = 0; i < track.history.size(); ++i)
-            {
-                ob.position.push_back(track.history[i]);
-            }
-            ob.velocity = track.velocity;
-            ob.heading = track.heading;
-            ob.polygon = track.polygon;
-            ob.position_covariance = track.position_covariance;
-            ob.velocity_covariance = track.velocity_covariance;
+            ob.delta_time = dt_prediction;  // FIXED 200ms (for future predictions)
 
+            geometry_msgs::msg::PoseWithCovariance current_pose;
+            current_pose.pose.position = track.current_position;
+            current_pose.pose.orientation.w = 1.0;
+            ob.position.push_back(current_pose);
+
+            ob.polygon = track.polygon;
             req->obstacles_past.push_back(std::move(ob));
         }
 
         auto future = predict_client_->async_send_request(req);
-
-        RCLCPP_DEBUG(this->get_logger(), "Waiting for prediction response...");
-
-        // Use direct wait_for instead of spin_until_future_complete
-        // This avoids the "already added to an executor" error
         if (future.wait_for(150ms) != std::future_status::ready)
         {
-            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Prediction request timed out");
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000, "Prediction timeout");
             return;
         }
 
         auto resp = future.get();
 
-        // Integrate predictions into current tracks by ID (later switch to UUID)
+        // Extract t+1 predictions for tracker
+        std::unordered_map<int64_t, geometry_msgs::msg::Point> predicted_t1;
         for (auto &pred_ob : resp->obstacles_future)
         {
-
-            auto it = std::find_if(tr.tracks.begin(), tr.tracks.end(),
-                                   [&](auto &trk)
-                                   { return trk.id == pred_ob.id; });
-            if (it == tr.tracks.end())
-                continue;
-
-            // Assume pred_ob.position holds ONLY future predicted points (not including current).
-            // Prepend current measured position if we have one in track.position already.
-            // If track.position[0] already current, replace rest with predictions.
-            if (!it->position.empty())
-            {
-                std::vector<geometry_msgs::msg::Point> merged;
-                merged.reserve(1 + pred_ob.position.size());
-                merged.push_back(it->position.front()); // current
-                merged.insert(merged.end(), pred_ob.position.begin(), pred_ob.position.end());
-                it->position = std::move(merged);
-            }
-            else
-            {
-                // No current position stored; just take predictions
-                it->position = pred_ob.position;
-            }
-
-            // Optionally update kinematics if provided
-            if (pred_ob.velocity.x != 0.0 || pred_ob.velocity.y != 0.0 || pred_ob.velocity.z != 0.0)
-                it->velocity = pred_ob.velocity;
-            it->heading = pred_ob.heading;
-            // Covariances
-            if (pred_ob.position_covariance != it->position_covariance)
-            {
-                it->position_covariance = pred_ob.position_covariance;
-            }
-            if (pred_ob.velocity_covariance != it->velocity_covariance)
-            {
-                it->velocity_covariance = pred_ob.velocity_covariance;
-            }
+            if (!pred_ob.position.empty())
+                predicted_t1[pred_ob.id] = pred_ob.position[0].pose.position;
+            cached_predictions_[pred_ob.id] = pred_ob;
         }
+        tracker_engine_.updatePredictedPositions(predicted_t1);
 
-        RCLCPP_INFO(this->get_logger(), "Prediction response processed successfully");
+        RCLCPP_DEBUG(get_logger(), "Prediction processed");
     }
 
-    void publishObstacleArray(const TrackerPredictionFrame &tr, const std::string &frame_id)
+    void publishObstacleArray(const std::vector<ObstacleTrack> &tracks,
+                              const builtin_interfaces::msg::Duration &dt,
+                              const rclcpp::Time &stamp,
+                              const std::string &frame_id)
     {
         nav2_dynamic_interface::msg::ObstacleArray msg;
-        msg.header.stamp = tr.stamp;
+        msg.header.stamp = stamp;
         msg.header.frame_id = frame_id;
-        msg.obstacles.reserve(tr.tracks.size());
 
-        for (const auto &track : tr.tracks)
+        for (const auto &track : tracks)
         {
             nav2_dynamic_interface::msg::Obstacle ob;
-
-            // ID and score
+            ob.header.stamp = stamp;
+            ob.header.frame_id = frame_id;
             ob.id = track.id;
-
-            // UUID - convert from int64 to UUID if needed
             ob.uuid = track.uuid;
+            ob.delta_time = dt;
 
-            // Positions - current + predictions
-            ob.position = track.position;
-            // Ensure at least current + future_len positions
-            if (ob.position.size() < static_cast<size_t>(future_len_ + 1))
+            geometry_msgs::msg::PoseWithCovariance current_pose;
+            current_pose.pose.position = track.current_position;
+            current_pose.pose.orientation.w = 1.0;
+            ob.position.push_back(current_pose);
+
+            // Append predictions
+            auto pred_it = cached_predictions_.find(track.id);
+            if (pred_it != cached_predictions_.end())
             {
-                const auto &current = ob.position.empty() ? geometry_msgs::msg::Point() : ob.position.front();
-
-                while (ob.position.size() <= static_cast<size_t>(future_len_))
-                {
-                    ob.position.push_back(current);
-                }
+                ob.position.insert(ob.position.end(),
+                                   pred_it->second.position.begin(),
+                                   pred_it->second.position.end());
+                ob.velocity = pred_it->second.velocity;
             }
 
-            // Kinematics
-            ob.velocity = track.velocity;
-            ob.heading = track.heading;
-
-            // Polygon hull
             ob.polygon = track.polygon;
-
-            // Covariances
-            ob.position_covariance = track.position_covariance;
-            ob.velocity_covariance = track.velocity_covariance;
-
             msg.obstacles.push_back(std::move(ob));
         }
 

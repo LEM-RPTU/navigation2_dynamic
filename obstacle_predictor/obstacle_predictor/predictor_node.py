@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-# Predictor node: stateless, single-request-per-obstacle, one-cycle-lag friendly
+# Predictor node: stateful, maintains history per obstacle ID, matches new Obstacle.msg format
 
 import math
 import time
 import threading
 from queue import Queue, Empty
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 import rclpy
 from rclpy.node import Node
-from rclpy.callback_groups import ReentrantCallbackGroup, MutuallyExclusiveCallbackGroup
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 
-from geometry_msgs.msg import Point, Vector3
+from geometry_msgs.msg import Point, PoseWithCovariance, TwistWithCovariance
 from std_msgs.msg import Header
+from builtin_interfaces.msg import Duration
 from nav2_dynamic_interface.msg import Obstacle
 from nav2_dynamic_interface.srv import PredictObstacles
 
@@ -24,37 +25,38 @@ class PredictorServiceNode(Node):
         # Generic selector
         self.declare_parameter('model_type', 'cv')  # cv | kf | var
 
+        # History management
+        self.declare_parameter('history_window', 20)  # Max history length per ID
+        self.declare_parameter('cleanup_threshold', 10)  # Cleanup after N cycles without update
+
         # CV model parameters
-        self.declare_parameter('cv.history_window', 20)
         self.declare_parameter('cv.min_history_length', 3)
         self.declare_parameter('cv.velocity_window', 4)
-        self.declare_parameter('cv.default_dt', 0.5)
-        self.declare_parameter('cv.confidence_base', 0.85)  # (Not used yet)
 
         # KF model (stub) parameters
         self.declare_parameter('kf.process_noise', 0.05)
         self.declare_parameter('kf.measurement_noise', 0.02)
-        self.declare_parameter('kf.init_velocity_var', 0.25)
-        self.declare_parameter('kf.default_dt', 0.5)
-        self.declare_parameter('kf.history_window', 30)
 
         # VAR model (stub) parameters
         self.declare_parameter('var.order', 2)
-        self.declare_parameter('var.max_history', 40)
-        self.declare_parameter('var.default_dt', 0.5)
+
+        # History storage: id -> list of PoseWithCovariance
+        self.history: Dict[int, List[PoseWithCovariance]] = {}
+        self.last_seen: Dict[int, int] = {}  # Track cycles since last update
+        self.cycle_count = 0
+        self.history_lock = threading.Lock()
 
         # Create callback groups for concurrency
         self.service_group = ReentrantCallbackGroup()
         
         # Service with threading
-        self.prediction_queue = Queue(maxsize=5)  # Max 5 pending predictions
+        self.prediction_queue = Queue(maxsize=10)
         self.worker_threads = []
-        for i in range(4):  # Use 4 worker threads
+        for i in range(4):
             thread = threading.Thread(target=self._prediction_worker, daemon=True)
             thread.start()
             self.worker_threads.append(thread)
         
-        # Service in reentrant group to allow concurrent processing
         self.srv = self.create_service(
             PredictObstacles,
             'predict_obstacles',
@@ -62,17 +64,13 @@ class PredictorServiceNode(Node):
             callback_group=self.service_group
         )
         
-        self.get_logger().info('PredictorServiceNode ready with multi-threading')
+        self.get_logger().info('PredictorServiceNode ready (stateful, history per ID)')
 
-    # ---------------- Service Callback ----------------
     def handle_predict(self, request, response):
-        """
-        Queue prediction request for worker threads instead of blocking
-        """
+        """Queue prediction request for worker threads, update history"""
         start_time = time.time()
         self.get_logger().info(f"Received prediction request with {len(request.obstacles_past)} obstacles")
         
-        # Fill out basic response header
         response.post_prediction_header = Header()
         response.post_prediction_header.stamp = self.get_clock().now().to_msg()
         if request.pre_prediction_header.frame_id:
@@ -82,12 +80,43 @@ class PredictorServiceNode(Node):
         if steps <= 0:
             return response
         
+        # Update history for incoming obstacles
+        hw = self.get_parameter('history_window').get_parameter_value().integer_value
+        with self.history_lock:
+            self.cycle_count += 1
+            for past_ob in request.obstacles_past:
+                obs_id = past_ob.id
+                
+                # Initialize history if new ID
+                if obs_id not in self.history:
+                    self.history[obs_id] = []
+                
+                # Append current pose (assume position[0] is current)
+                if past_ob.position:
+                    self.history[obs_id].append(past_ob.position[0])
+                    # Cap history
+                    if len(self.history[obs_id]) > hw:
+                        self.history[obs_id] = self.history[obs_id][-hw:]
+                
+                # Track last seen
+                self.last_seen[obs_id] = self.cycle_count
+            
+            # Cleanup stale IDs
+            cleanup_thresh = self.get_parameter('cleanup_threshold').get_parameter_value().integer_value
+            stale_ids = [
+                obs_id for obs_id, last_cycle in self.last_seen.items()
+                if self.cycle_count - last_cycle > cleanup_thresh
+            ]
+            for obs_id in stale_ids:
+                self.get_logger().info(f"Cleaning up stale ID {obs_id}")
+                del self.history[obs_id]
+                del self.last_seen[obs_id]
+        
         # Process each obstacle in parallel
         result_queue = Queue()
         tasks_submitted = 0 
         
         for past_ob in request.obstacles_past:
-            # Queue prediction task
             self.prediction_queue.put((past_ob, steps, result_queue))
             tasks_submitted += 1
             
@@ -106,154 +135,166 @@ class PredictorServiceNode(Node):
             try:
                 past_ob, steps, result_queue = self.prediction_queue.get(timeout=0.1)
                 
-                # Create obstacle for response
                 future_ob = Obstacle()
                 future_ob.id = past_ob.id
                 future_ob.uuid = past_ob.uuid
+                future_ob.header = past_ob.header
+                future_ob.delta_time = past_ob.delta_time
+                future_ob.polygon = past_ob.polygon
+                
+                # Get history for this ID (thread-safe copy)
+                with self.history_lock:
+                    hist = list(self.history.get(past_ob.id, []))
                 
                 # Get model type
                 model_type = self.get_parameter('model_type').get_parameter_value().string_value.lower()
                 
-                # Compute prediction based on model
+                # Compute dt from delta_time
+                dt_sec = past_ob.delta_time.sec + past_ob.delta_time.nanosec / 1e9
+                if dt_sec <= 0:
+                    dt_sec = 0.2  # Fallback
+                
+                # Compute prediction
                 if model_type == 'cv':
-                    future_points, vel, heading, pos_cov, vel_cov = self._predict_cv(past_ob.position, steps)
+                    future_poses, vel_twists = self._predict_cv(hist, steps, dt_sec)
                 elif model_type == 'kf':
-                    future_points, vel, heading, pos_cov, vel_cov = self._predict_kf_stub(past_ob.position, steps)
+                    future_poses, vel_twists = self._predict_kf_stub(hist, steps, dt_sec)
                 elif model_type == 'var':
-                    future_points, vel, heading, pos_cov, vel_cov = self._predict_var_stub(past_ob.position, steps)
+                    future_poses, vel_twists = self._predict_var_stub(hist, steps, dt_sec)
                 else:
-                    future_points, vel, heading, pos_cov, vel_cov = self._predict_cv(past_ob.position, steps)
+                    future_poses, vel_twists = self._predict_cv(hist, steps, dt_sec)
                 
-                # Fill response
-                future_ob.position = future_points
-                future_ob.velocity = vel
-                future_ob.heading = heading
+                # Fill response: position = future_poses (predictions only, current already in request)
+                future_ob.position = future_poses
+                future_ob.velocity = vel_twists
                 
-                # Ensure covariance is properly formatted (exactly 4 elements each)
-                if len(pos_cov) != 4:
-                    self.get_logger().warn(f"Position covariance wrong size {len(pos_cov)}, fixing")
-                    pos_cov = [0.05, 0.0, 0.0, 0.05]
-                if len(vel_cov) != 4:
-                    self.get_logger().warn(f"Velocity covariance wrong size {len(vel_cov)}, fixing")
-                    vel_cov = [0.01, 0.0, 0.0, 0.01]
-                
-                future_ob.position_covariance = pos_cov
-                future_ob.velocity_covariance = vel_cov
-                
-                # Put result in result queue
                 result_queue.put(future_ob)
                 self.prediction_queue.task_done()
                 
             except Empty:
-                # No work to do
                 continue
             except Exception as e:
                 self.get_logger().error(f"Error in prediction worker: {str(e)}")
 
-    # ---------------- Constant Velocity Implementation ----------------
-    def _predict_cv(self, history: List[Point], steps: int) -> Tuple[List[Point], Vector3, Vector3, List[float], List[float]]:
-        hw = self.get_parameter('cv.history_window').get_parameter_value().integer_value
+    def _predict_cv(self, history: List[PoseWithCovariance], steps: int, dt: float) -> Tuple[List[PoseWithCovariance], List[TwistWithCovariance]]:
+        """Constant velocity prediction using stored history"""
         min_hist = self.get_parameter('cv.min_history_length').get_parameter_value().integer_value
         vel_w = max(1, self.get_parameter('cv.velocity_window').get_parameter_value().integer_value)
-        dt = float(self.get_parameter('cv.default_dt').get_parameter_value().double_value)
 
         if not history:
-            return self._repeat_origin(steps)
+            return self._repeat_static(steps, dt)
 
-        hist = history[-hw:] if hw > 0 else history
-        n = len(hist)
+        n = len(history)
+        points = [pose.pose.position for pose in history]
 
-        # Default: stationary
+        # Estimate velocity
         vx = vy = 0.0
         if n >= 2:
-            # Use last K segments for smoothing
             seg_count = min(vel_w, n - 1)
-            dx_sum = 0.0
-            dy_sum = 0.0
-            for i in range(n - seg_count, n - 1):
-                dx_sum += (hist[i + 1].x - hist[i].x)
-                dy_sum += (hist[i + 1].y - hist[i].y)
+            dx_sum = dy_sum = 0.0
+            for i in range(n - seg_count, n):
+                dx_sum += (points[i].x - points[i - 1].x)
+                dy_sum += (points[i].y - points[i - 1].y)
             vx = dx_sum / (seg_count * dt)
             vy = dy_sum / (seg_count * dt)
 
-        # If insufficient history, treat as stationary (or very low confidence – not encoded here)
         if n < min_hist:
             vx = vy = 0.0
 
-        speed = math.hypot(vx, vy)
-        heading = Vector3()
-        if speed > 1e-6:
-            heading.x = vx / speed
-            heading.y = vy / speed
-        else:
-            heading.x = 0.0
-            heading.y = 0.0
-        heading.z = 0.0
-
-        vel_vec = Vector3()
-        vel_vec.x = vx
-        vel_vec.y = vy
-        vel_vec.z = 0.0
-
-        last = hist[-1]
-        preds: List[Point] = []
+        last_point = points[-1]
+        future_poses: List[PoseWithCovariance] = []
+        vel_twists: List[TwistWithCovariance] = []
+        
         for k in range(1, steps + 1):
-            p = Point()
-            p.x = last.x + vx * dt * k
-            p.y = last.y + vy * dt * k
-            p.z = last.z
-            preds.append(p)
+            # Pose
+            pose = PoseWithCovariance()
+            pose.pose.position.x = last_point.x + vx * dt * k
+            pose.pose.position.y = last_point.y + vy * dt * k
+            pose.pose.position.z = last_point.z
+            pose.pose.orientation.w = 1.0
+            
+            # Compute covariance from history scatter
+            if n >= 2:
+                mean_x = sum(p.x for p in points) / n
+                mean_y = sum(p.y for p in points) / n
+                var_x = sum((p.x - mean_x) ** 2 for p in points) / (n - 1)
+                var_y = sum((p.y - mean_y) ** 2 for p in points) / (n - 1)
+            else:
+                var_x = var_y = 0.01
+            
+            # 6x6 covariance (row-major: xx, xy, xz, ..., yaw)
+            pose.covariance = [
+                var_x, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, var_y, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.01, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.01, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.01, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.01
+            ]
+            future_poses.append(pose)
+            
+            # Twist
+            twist = TwistWithCovariance()
+            twist.twist.linear.x = vx
+            twist.twist.linear.y = vy
+            twist.twist.linear.z = 0.0
+            twist.twist.angular.z = 0.0
+            
+            vel_var_x = (abs(vx) + 1e-3) * 0.01
+            vel_var_y = (abs(vy) + 1e-3) * 0.01
+            twist.covariance = [
+                vel_var_x, 0.0, 0.0, 0.0, 0.0, 0.0,
+                0.0, vel_var_y, 0.0, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.01, 0.0, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.01, 0.0, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.01, 0.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.01
+            ]
+            vel_twists.append(twist)
 
-        # Simple sample variance for position (historical scatter)
-        if n >= 2:
-            mean_x = sum(p.x for p in hist) / n
-            mean_y = sum(p.y for p in hist) / n
-            var_x = sum((p.x - mean_x) ** 2 for p in hist) / (n - 1)
-            var_y = sum((p.y - mean_y) ** 2 for p in hist) / (n - 1)
-        else:
-            var_x = var_y = 0.01
+        return future_poses, vel_twists
 
-        # Very naive velocity variance proxy
-        vel_var_x = (abs(vx) + 1e-3) * 0.01
-        vel_var_y = (abs(vy) + 1e-3) * 0.01
+    def _predict_kf_stub(self, history: List[PoseWithCovariance], steps: int, dt: float):
+        """KF stub: defer to CV with inflated covariance"""
+        future_poses, vel_twists = self._predict_cv(history, steps, dt)
+        for pose in future_poses:
+            pose.covariance = [c * 2.0 for c in pose.covariance]
+        for twist in vel_twists:
+            twist.covariance = [c * 2.0 for c in twist.covariance]
+        return future_poses, vel_twists
 
-        pos_cov = [var_x, 0.0, 0.0, var_y]
-        vel_cov = [vel_var_x, 0.0, 0.0, vel_var_y]
+    def _predict_var_stub(self, history: List[PoseWithCovariance], steps: int, dt: float):
+        """VAR stub: defer to CV with different inflation"""
+        future_poses, vel_twists = self._predict_cv(history, steps, dt)
+        for pose in future_poses:
+            pose.covariance[0] *= 1.5  # xx
+            pose.covariance[7] *= 1.5  # yy
+        return future_poses, vel_twists
 
-        return preds, vel_vec, heading, pos_cov, vel_cov
-
-    # ---------------- KF Stub ----------------
-    def _predict_kf_stub(self, history: List[Point], steps: int):
-        # Placeholder: defer to CV until KF implemented
-        preds, vel, heading, pos_cov, vel_cov = self._predict_cv(history, steps)
-        # Inflate covariance to signal lower trust vs proper KF
-        pos_cov = [c * 2.0 for c in pos_cov]
-        vel_cov = [c * 2.0 for c in vel_cov]
-        return preds, vel, heading, pos_cov, vel_cov
-
-    # ---------------- VAR Stub ----------------
-    def _predict_var_stub(self, history: List[Point], steps: int):
-        # Placeholder: copy CV prediction (later replace with true VAR multi-step)
-        preds, vel, heading, pos_cov, vel_cov = self._predict_cv(history, steps)
-        # Slightly inflate different axis to simulate different model
-        pos_cov = [pos_cov[0] * 1.5, 0.0, 0.0, pos_cov[3] * 1.5]
-        return preds, vel, heading, pos_cov, vel_cov
-
-    # ---------------- Helpers ----------------
-    def _repeat_origin(self, steps: int):
-        zero = Point()
-        preds = [zero for _ in range(steps)]
-        vel = Vector3()
-        heading = Vector3()
-        pos_cov = [0.05, 0.0, 0.0, 0.05]
-        vel_cov = [0.05, 0.0, 0.0, 0.05]
-        return preds, vel, heading, pos_cov, vel_cov
+    def _repeat_static(self, steps: int, dt: float):
+        """Fallback for no history: stationary predictions"""
+        zero_pose = PoseWithCovariance()
+        zero_pose.pose.position = Point()
+        zero_pose.pose.orientation.w = 1.0
+        zero_pose.covariance = [
+            0.05, 0.0, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.05, 0.0, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.01, 0.0, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.01, 0.0, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.01, 0.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.01
+        ]
+        
+        zero_twist = TwistWithCovariance()
+        zero_twist.covariance = zero_pose.covariance
+        
+        future_poses = [zero_pose for _ in range(steps)]
+        vel_twists = [zero_twist for _ in range(steps)]
+        return future_poses, vel_twists
 
 
 def main(args=None):
     rclpy.init(args=args)
-    
-    # Create node with multithreaded executor
     executor = MultiThreadedExecutor(num_threads=6)
     node = PredictorServiceNode()
     executor.add_node(node)
