@@ -2,19 +2,59 @@
 
 #include <algorithm>
 #include <utility>
+#include <cmath>
 
-geometry_msgs::msg::Point ClusterEngine::computeCentroid(const std::vector<geometry_msgs::msg::Point>& pts)
+// Compute centroid of a POLYGON using Shoelace formula
+geometry_msgs::msg::Point ClusterEngine::computePolygonCentroid(const std::vector<geometry_msgs::msg::Point>& hull)
 {
-  geometry_msgs::msg::Point c;
-  c.x = 0.0; c.y = 0.0; c.z = 0.0;
-  if (pts.empty()) return c;
-  for (const auto& p : pts) {
-    c.x += p.x;
-    c.y += p.y;
+  geometry_msgs::msg::Point centroid;
+  centroid.x = 0.0;
+  centroid.y = 0.0;
+  centroid.z = 0.0;
+
+  if (hull.size() < 3) {
+    // Degenerate case: use simple average
+    if (hull.empty()) return centroid;
+    for (const auto& p : hull) {
+      centroid.x += p.x;
+      centroid.y += p.y;
+    }
+    centroid.x /= static_cast<double>(hull.size());
+    centroid.y /= static_cast<double>(hull.size());
+    return centroid;
   }
-  c.x /= static_cast<double>(pts.size());
-  c.y /= static_cast<double>(pts.size());
-  return c;
+
+  // Shoelace formula for polygon centroid
+  double A = 0.0;   // Signed area
+  double Cx = 0.0;  // Centroid x accumulator
+  double Cy = 0.0;  // Centroid y accumulator
+
+  const size_t n = hull.size();
+  for (size_t i = 0; i < n; ++i) {
+    size_t j = (i + 1) % n;  // Next vertex (wraps around)
+    
+    double cross = hull[i].x * hull[j].y - hull[j].x * hull[i].y;
+    A += cross;
+    Cx += (hull[i].x + hull[j].x) * cross;
+    Cy += (hull[i].y + hull[j].y) * cross;
+  }
+
+  A *= 0.5;  // Signed area
+  
+  if (std::abs(A) < 1e-9) {
+    // Near-zero area (collinear points): fallback to average
+    for (const auto& p : hull) {
+      centroid.x += p.x;
+      centroid.y += p.y;
+    }
+    centroid.x /= static_cast<double>(hull.size());
+    centroid.y /= static_cast<double>(hull.size());
+    return centroid;
+  }
+
+  centroid.x = Cx / (6.0 * A);
+  centroid.y = Cy / (6.0 * A);
+  return centroid;
 }
 
 double ClusterEngine::cross(const geometry_msgs::msg::Point& O,
@@ -123,8 +163,13 @@ ClusterEngine::extract(nav2_costmap_2d::Costmap2D* costmap, unsigned char cost_t
         if (!pts.empty()) {
           BlobCluster cluster;
           cluster.points = std::move(pts);
-          cluster.centroid = computeCentroid(cluster.points);
+          
+          // Compute convex hull FIRST
           cluster.boundary = computeConvexHull(cluster.points);
+          
+          // Compute centroid from convex hull (Shoelace formula)
+          cluster.centroid = computePolygonCentroid(cluster.boundary);
+          
           clusters.push_back(std::move(cluster));
         }
       }

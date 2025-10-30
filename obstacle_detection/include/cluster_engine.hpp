@@ -16,13 +16,14 @@ public:
                                    unsigned char cost_threshold) const;
 
 private:
-  static geometry_msgs::msg::Point computeCentroid(const std::vector<geometry_msgs::msg::Point>& pts);
-
-  // Monotone chain convex hull (O(n log n)), returns hull in CCW order without duplicate last point.
+  // Compute centroid of a polygon using Shoelace formula
+  static geometry_msgs::msg::Point computePolygonCentroid(const std::vector<geometry_msgs::msg::Point>& hull);
+  
+  // Compute convex hull (Andrew's monotone chain)
   static std::vector<geometry_msgs::msg::Point> computeConvexHull(std::vector<geometry_msgs::msg::Point> pts);
-
-  // Cross product (OA x OB)
+  
+  // Cross product for convex hull algorithm
   static double cross(const geometry_msgs::msg::Point& O,
-                      const geometry_msgs::msg::Point& A,
-                      const geometry_msgs::msg::Point& B);
+                     const geometry_msgs::msg::Point& A,
+                     const geometry_msgs::msg::Point& B);
 };
