@@ -1,10 +1,7 @@
 #pragma once
-// #include "nav2_costmap_2d/layer.hpp"
-// #include "nav2_costmap_2d/layered_costmap.hpp"
+
 #include "nav2_util/node_utils.hpp"
-#include "nav_msgs/msg/occupancy_grid.hpp"
 #include "geometry_msgs/msg/point_stamped.hpp"
-#include "nav2_costmap_2d/costmap_layer.hpp"
 #include "nav2_costmap_2d/obstacle_layer.hpp"
 
 namespace foreground_mask
@@ -46,6 +43,7 @@ namespace foreground_mask
         void incomingStaticMap(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
 
         double layer_min_x, layer_min_y, layer_max_x, layer_max_y;
+
     };
 
 } // namespace foreground_mask
