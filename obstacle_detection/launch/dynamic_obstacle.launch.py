@@ -41,8 +41,8 @@ def generate_launch_description():
 
     predictor_node = Node(
         package='obstacle_predictor',
-        executable='predictor_node',
-        name='predictor_node',
+        executable='predictor_node_cv',
+        name='predictor_node_cv',
         output='screen',
         namespace=robot_namespace,
         parameters=[params_file]

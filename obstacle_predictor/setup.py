@@ -20,7 +20,9 @@ setup(
     license='BSD-3-Clause',
     entry_points={
         'console_scripts': [
-            'predictor_node = obstacle_predictor.predictor_node:main',
+            'predictor_node_cv = obstacle_predictor.predictor_node_cv:main',
+            'predictor_node_kf = obstacle_predictor.predictor_node_kf:main',
+            'predictor_node_var = obstacle_predictor.predictor_node_var:main'
         ],
     },
 )

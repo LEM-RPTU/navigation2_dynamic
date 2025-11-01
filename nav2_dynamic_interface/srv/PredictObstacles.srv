@@ -1,6 +1,0 @@
-std_msgs/Header pre_prediction_header
-uint32 prediction_steps
-Obstacle[] obstacles_past
----
-std_msgs/Header post_prediction_header
-Obstacle[] obstacles_future

@@ -14,11 +14,11 @@
  * @brief Visualization node for dynamic obstacles
  * 
  * Subscribes to ObstacleArray and publishes RViz markers:
- * - Centroid spheres
+ * - Centroid spheres (current position)
  * - Track ID labels
  * - Predicted trajectories (line strips)
  * - Convex hull boundaries
- * - Covariance ellipses
+ * - Covariance ellipses (for all predicted positions)
  * - Velocity arrows (color-coded by speed)
  */
 class ObstacleVizNode : public rclcpp::Node
@@ -28,7 +28,7 @@ public:
   : Node("obstacle_viz_node")
   {
     marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
-      "cluster_markers", 10);
+      "obstacle_markers", 10);
 
     sub_ = this->create_subscription<nav2_dynamic_interface::msg::ObstacleArray>(
       "obstacles_array", 10,
@@ -59,7 +59,7 @@ private:
 
       geometry_msgs::msg::Point centroid_pos = ob.position.front().pose.position;
 
-      // Centroid marker (green sphere)
+      // Centroid marker (current position - green sphere)
       visualization_msgs::msg::Marker centroid;
       centroid.header.frame_id = frame_id;
       centroid.header.stamp = stamp;
@@ -121,7 +121,7 @@ private:
         ma.markers.push_back(std::move(traj));
       }
 
-      // Polygon hull (convex boundary)
+      // Polygon hull (convex boundary - only for current position)
       if (!ob.polygon.points.empty()) {
         visualization_msgs::msg::Marker hull;
         hull.header.frame_id = frame_id;
@@ -150,24 +150,36 @@ private:
         ma.markers.push_back(std::move(hull));
       }
 
-      // Covariance ellipse (uncertainty visualization)
-      const auto & cov = ob.position.front().covariance;
-      if (cov[0] > 0.0 && cov[7] > 0.0) {  // Check xx and yy components
+      // Covariance ellipses for ALL predicted positions
+      for (size_t pos_idx = 0; pos_idx < ob.position.size(); ++pos_idx) {
+        const auto & pose_cov = ob.position[pos_idx];
+        const auto & cov = pose_cov.covariance;
+
+        // Check if covariance is valid
+        if (cov[0] <= 0.0 || cov[7] <= 0.0) {
+          continue;  // Skip invalid covariance
+        }
+
         visualization_msgs::msg::Marker cov_ellipse;
         cov_ellipse.header.frame_id = frame_id;
         cov_ellipse.header.stamp = stamp;
         cov_ellipse.ns = "clusters_covariance";
-        cov_ellipse.id = ob.id;
+        // Unique ID: encode both obstacle ID and position index
+        cov_ellipse.id = static_cast<int>(ob.id * 1000 + pos_idx);
         cov_ellipse.type = visualization_msgs::msg::Marker::LINE_STRIP;
         cov_ellipse.action = visualization_msgs::msg::Marker::ADD;
-        cov_ellipse.scale.x = 0.025;
-        cov_ellipse.color.r = 0.95f;
-        cov_ellipse.color.g = 0.95f;
-        cov_ellipse.color.b = 0.10f;
-        cov_ellipse.color.a = 0.85f;
+        cov_ellipse.scale.x = 0.02;
+
+        // Color fading: current (yellow) → future (faded yellow)
+        float fade = 1.0f - (static_cast<float>(pos_idx) / ob.position.size()) * 0.5f;
+        cov_ellipse.color.r = 0.95f * fade;
+        cov_ellipse.color.g = 0.95f * fade;
+        cov_ellipse.color.b = 0.10f * fade;
+        cov_ellipse.color.a = 0.7f * fade;
+
         cov_ellipse.lifetime = rclcpp::Duration(0, 700000000);
         cov_ellipse.frame_locked = true;
-        cov_ellipse.pose.position = centroid_pos;
+        cov_ellipse.pose.position = pose_cov.pose.position;
 
         // Extract 2x2 covariance submatrix
         double xx = cov[0];
@@ -194,7 +206,7 @@ private:
           theta = 0.5 * std::atan2(2.0 * cxy, xx - yy);
         }
 
-        // Ellipse axes (2-sigma)
+        // Ellipse axes (2-sigma confidence interval)
         double a = 2.0 * std::sqrt(l1);
         double b = 2.0 * std::sqrt(l2);
 
@@ -217,62 +229,119 @@ private:
         ma.markers.push_back(std::move(cov_ellipse));
       }
 
-      // Velocity arrow (color-coded by speed)
-      if (!ob.velocity.empty()) {
-        const auto & vel = ob.velocity.front().twist.linear;
+      // Velocity arrows for ALL predicted velocities
+      for (size_t vel_idx = 0; vel_idx < ob.velocity.size(); ++vel_idx) {
+        const auto & vel = ob.velocity[vel_idx].twist.linear;
         double speed = std::sqrt(vel.x * vel.x + vel.y * vel.y);
 
-        if (speed > 0.05) {  // Threshold: 5 cm/s
-          visualization_msgs::msg::Marker vel_arrow;
-          vel_arrow.header.frame_id = frame_id;
-          vel_arrow.header.stamp = stamp;
-          vel_arrow.ns = "clusters_velocity";
-          vel_arrow.id = ob.id;
-          vel_arrow.type = visualization_msgs::msg::Marker::ARROW;
-          vel_arrow.action = visualization_msgs::msg::Marker::ADD;
-
-          // Arrow from centroid along velocity vector
-          geometry_msgs::msg::Point start = centroid_pos;
-          geometry_msgs::msg::Point end;
-          end.x = centroid_pos.x + vel.x;
-          end.y = centroid_pos.y + vel.y;
-          end.z = centroid_pos.z;
-
-          vel_arrow.points.push_back(start);
-          vel_arrow.points.push_back(end);
-
-          // Arrow styling
-          vel_arrow.scale.x = 0.08;  // Shaft diameter
-          vel_arrow.scale.y = 0.15;  // Head diameter
-          vel_arrow.scale.z = 0.0;   // Head length (auto)
-
-          // Color interpolation (green → red based on speed)
-          float speed_norm = std::min(static_cast<float>(speed / 2.0), 1.0f);
-          vel_arrow.color.r = speed_norm;
-          vel_arrow.color.g = 1.0f - speed_norm;
-          vel_arrow.color.b = 0.2f;
-          vel_arrow.color.a = 0.9f;
-
-          vel_arrow.frame_locked = true;
-          ma.markers.push_back(std::move(vel_arrow));
+        if (speed < 0.05) {  // Skip near-stationary
+          continue;
         }
+
+        // Use corresponding position if available, otherwise use current
+        geometry_msgs::msg::Point start_pos = 
+          (vel_idx < ob.position.size()) ? 
+          ob.position[vel_idx].pose.position : centroid_pos;
+
+        visualization_msgs::msg::Marker vel_arrow;
+        vel_arrow.header.frame_id = frame_id;
+        vel_arrow.header.stamp = stamp;
+        vel_arrow.ns = "clusters_velocity";
+        // Unique ID: encode obstacle ID and velocity index
+        vel_arrow.id = static_cast<int>(ob.id * 1000 + vel_idx);
+        vel_arrow.type = visualization_msgs::msg::Marker::ARROW;
+        vel_arrow.action = visualization_msgs::msg::Marker::ADD;
+
+        // Arrow from position along velocity vector
+        geometry_msgs::msg::Point start = start_pos;
+        geometry_msgs::msg::Point end;
+        end.x = start_pos.x + vel.x * 0.5;  // Scale for visibility (0.5s lookahead)
+        end.y = start_pos.y + vel.y * 0.5;
+        end.z = start_pos.z;
+
+        vel_arrow.points.push_back(start);
+        vel_arrow.points.push_back(end);
+
+        // Arrow styling (smaller for future predictions)
+        float scale_factor = 1.0f - (static_cast<float>(vel_idx) / ob.velocity.size()) * 0.3f;
+        vel_arrow.scale.x = 0.06 * scale_factor;  // Shaft diameter
+        vel_arrow.scale.y = 0.12 * scale_factor;  // Head diameter
+        vel_arrow.scale.z = 0.0;                   // Head length (auto)
+
+        // Color interpolation (green → red based on speed)
+        float speed_norm = std::min(static_cast<float>(speed / 2.0), 1.0f);
+        float fade = 1.0f - (static_cast<float>(vel_idx) / ob.velocity.size()) * 0.4f;
+        vel_arrow.color.r = speed_norm * fade;
+        vel_arrow.color.g = (1.0f - speed_norm) * fade;
+        vel_arrow.color.b = 0.2f * fade;
+        vel_arrow.color.a = 0.8f * fade;
+
+        vel_arrow.lifetime = rclcpp::Duration(0, 700000000);
+        vel_arrow.frame_locked = true;
+        ma.markers.push_back(std::move(vel_arrow));
+      }
+
+      // Predicted position markers (small spheres for future positions)
+      for (size_t pos_idx = 1; pos_idx < ob.position.size(); ++pos_idx) {
+        visualization_msgs::msg::Marker pred_sphere;
+        pred_sphere.header.frame_id = frame_id;
+        pred_sphere.header.stamp = stamp;
+        pred_sphere.ns = "clusters_predictions";
+        pred_sphere.id = static_cast<int>(ob.id * 1000 + pos_idx);
+        pred_sphere.type = visualization_msgs::msg::Marker::SPHERE;
+        pred_sphere.action = visualization_msgs::msg::Marker::ADD;
+
+        // Size decreases with distance into future
+        float scale_factor = 1.0f - (static_cast<float>(pos_idx) / ob.position.size()) * 0.5f;
+        pred_sphere.scale.x = 0.08 * scale_factor;
+        pred_sphere.scale.y = 0.08 * scale_factor;
+        pred_sphere.scale.z = 0.08 * scale_factor;
+
+        // Color fades from cyan to dark blue
+        float fade = 1.0f - (static_cast<float>(pos_idx) / ob.position.size()) * 0.6f;
+        pred_sphere.color.r = 0.1f * fade;
+        pred_sphere.color.g = 0.6f * fade;
+        pred_sphere.color.b = 0.9f * fade;
+        pred_sphere.color.a = 0.7f * fade;
+
+        pred_sphere.pose.position = ob.position[pos_idx].pose.position;
+        pred_sphere.pose.orientation.w = 1.0;
+        pred_sphere.lifetime = rclcpp::Duration(0, 700000000);
+        pred_sphere.frame_locked = true;
+        ma.markers.push_back(std::move(pred_sphere));
       }
     }
 
     // Delete markers for retired tracks
     for (int64_t retired_id : active_ids_) {
       if (current_ids.find(retired_id) == current_ids.end()) {
+        // Delete all marker types for this ID
         std::vector<std::string> namespaces = {
           "clusters_centroid", "clusters_label", "clusters_trajectory",
-          "clusters_hull", "clusters_covariance", "clusters_velocity"
+          "clusters_hull", "clusters_covariance", "clusters_velocity",
+          "clusters_predictions"
         };
+        
         for (const auto & ns : namespaces) {
+          // Delete base marker
           visualization_msgs::msg::Marker delete_marker;
           delete_marker.header = msg->header;
           delete_marker.ns = ns;
           delete_marker.id = static_cast<int>(retired_id);
           delete_marker.action = visualization_msgs::msg::Marker::DELETE;
           ma.markers.push_back(delete_marker);
+
+          // Delete indexed markers (covariance, velocity, predictions)
+          if (ns == "clusters_covariance" || ns == "clusters_velocity" || ns == "clusters_predictions") {
+            for (int idx = 0; idx < 100; ++idx) {  // Assume max 100 predictions
+              visualization_msgs::msg::Marker delete_indexed;
+              delete_indexed.header = msg->header;
+              delete_indexed.ns = ns;
+              delete_indexed.id = static_cast<int>(retired_id * 1000 + idx);
+              delete_indexed.action = visualization_msgs::msg::Marker::DELETE;
+              ma.markers.push_back(delete_indexed);
+            }
+          }
         }
       }
     }
