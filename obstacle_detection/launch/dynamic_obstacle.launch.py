@@ -27,10 +27,10 @@ def generate_launch_description():
 
 
     # Description of Nodes
-    odpp_node = Node(
+    detection_node = Node(
             package='obstacle_detection',
-            executable='dynamic_obstacle_node',
-            name='dynamic_obstacle_node',
+            executable='detection_node',
+            name='detection_node',
             output='screen',
             namespace = robot_namespace,
             parameters = [params_file],
@@ -61,7 +61,7 @@ def generate_launch_description():
     ld = LaunchDescription()
     ld.add_action(declare_robot_namespace_cmd)
     ld.add_action(declare_params_file_cmd)
-    ld.add_action(odpp_node)
+    ld.add_action(detection_node)
     ld.add_action(predictor_node)
     ld.add_action(obstacle_viz_node)
     return ld

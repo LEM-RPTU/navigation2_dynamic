@@ -43,7 +43,7 @@
         inflation_radius: 1.0
         publish_inflated: true
 
-/**/dynamic_obstacle_node:
+/**/detection_node:
   ros__parameters:
     tracking.gate_distance: 1.5
     tracking.max_missed: 3

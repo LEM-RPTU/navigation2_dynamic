@@ -13,18 +13,18 @@ find_package(visualization_msgs REQUIRED)
 find_package(nav2_dynamic_interface REQUIRED)
 find_package(unique_identifier_msgs REQUIRED)
 
-add_executable(dynamic_obstacle_node
-  src/odpp_node.cpp
+add_executable(detection_node
+  src/detection_node.cpp
   src/cluster_engine.cpp
   src/tracker_engine.cpp
 )
 
-target_include_directories(dynamic_obstacle_node PUBLIC
+target_include_directories(detection_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
 
-ament_target_dependencies(dynamic_obstacle_node
+ament_target_dependencies(detection_node
   rclcpp
   rclcpp_lifecycle
   nav2_costmap_2d
@@ -34,7 +34,7 @@ ament_target_dependencies(dynamic_obstacle_node
   unique_identifier_msgs
 )
 
-install(TARGETS dynamic_obstacle_node
+install(TARGETS detection_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -48,8 +48,15 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}
 )
 
-add_executable(obstacle_viz_node src/obstacle_viz_node.cpp)
-ament_target_dependencies(obstacle_viz_node rclcpp nav2_dynamic_interface visualization_msgs geometry_msgs)
+add_executable(obstacle_viz_node 
+  src/obstacle_viz_node.cpp)
+
+ament_target_dependencies(obstacle_viz_node 
+  rclcpp 
+  nav2_dynamic_interface 
+  visualization_msgs 
+  geometry_msgs)
+  
 install(TARGETS obstacle_viz_node DESTINATION lib/${PROJECT_NAME})
 
 ament_export_include_directories(include)

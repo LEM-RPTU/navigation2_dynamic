@@ -27,20 +27,20 @@
 #include "types.hpp"
 
 /**
- * @class DynamicObstacleNode
+ * @class DetectionNode
  * @brief Main node for dynamic obstacle detection, tracking, and prediction
- * 
+ *
  * This node orchestrates:
  * - Costmap-based blob detection (via ClusterEngine)
  * - Multi-hypothesis tracking (via TrackerEngine with Hungarian matching)
  * - Future trajectory prediction (via external predictor service)
  * - Publishing of obstacle states for Nav2 consumption
  */
-class DynamicObstacleNode : public rclcpp::Node
+class DetectionNode : public rclcpp::Node
 {
 public:
-  DynamicObstacleNode()
-  : Node("dynamic_obstacle_node")
+  DetectionNode()
+  : Node("detection_node")
   {
     // Create separate callback groups for concurrent execution
     timer_cb_group_ = this->create_callback_group(
@@ -85,10 +85,10 @@ public:
     // Start periodic processing timer
     timer_ = this->create_wall_timer(
       std::chrono::milliseconds(200),
-      std::bind(&DynamicObstacleNode::processCostmap, this),
+      std::bind(&DetectionNode::processCostmap, this),
       timer_cb_group_);
 
-    RCLCPP_INFO(this->get_logger(), "Dynamic obstacle node initialized");
+    RCLCPP_INFO(this->get_logger(), "Detection node initialized");
   }
 
   /**
@@ -122,7 +122,7 @@ private:
 
   /**
    * @brief Main processing loop: detect, track, predict, publish
-   * 
+   *
    * Executes at fixed rate (200ms default):
    * 1. Extract blob clusters from costmap
    * 2. Update tracker with detections (Hungarian matching)
@@ -151,11 +151,11 @@ private:
 
   /**
    * @brief Send prediction request to external service
-   * 
+   *
    * @param tracks Current obstacle tracks from tracker
    * @param dt_prediction Fixed timestep for prediction spacing
    * @param stamp Current timestamp
-   * 
+   *
    * Sends current obstacle states to predictor service, receives future
    * trajectories, and updates tracker's predicted positions for next cycle.
    */
@@ -230,12 +230,12 @@ private:
 
   /**
    * @brief Publish obstacle array with current + predicted states
-   * 
+   *
    * @param tracks Current obstacle tracks
    * @param dt Prediction timestep
    * @param stamp Current timestamp
    * @param frame_id Reference frame
-   * 
+   *
    * Combines current detections with cached predictions to produce
    * complete obstacle trajectories for Nav2 planners.
    */
@@ -285,7 +285,7 @@ int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
 
-  auto node = std::make_shared<DynamicObstacleNode>();
+  auto node = std::make_shared<DetectionNode>();
 
   // Multi-threaded executor for concurrent callback execution
   rclcpp::executors::MultiThreadedExecutor executor(rclcpp::ExecutorOptions(), 3);
