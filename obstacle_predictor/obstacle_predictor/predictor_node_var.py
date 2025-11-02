@@ -66,14 +66,15 @@ class PredictorNode(Node):
 
     def on_detections(self, msg: ObstacleArray):
         """Process incoming detections, update history, compute and publish predictions"""
-        if not msg.obstacles:
-            return
-
+        
         # Get parameters
         history_window = self.get_parameter('history_window').get_parameter_value().integer_value
         cleanup_threshold = self.get_parameter('cleanup_threshold').get_parameter_value().integer_value
         prediction_steps = self.get_parameter('prediction_steps').get_parameter_value().integer_value
         prediction_dt = self.get_parameter('prediction_dt').get_parameter_value().double_value
+
+        # Track which IDs are in this detection cycle
+        current_detection_ids = set()
 
         # Update history
         with self.history_lock:
@@ -81,6 +82,7 @@ class PredictorNode(Node):
 
             for detection in msg.obstacles:
                 obs_id = detection.id
+                current_detection_ids.add(obs_id)
 
                 # Initialize history if new ID
                 if obs_id not in self.history:
@@ -97,20 +99,18 @@ class PredictorNode(Node):
                 # Track last seen
                 self.last_seen[obs_id] = self.cycle_count
 
-            # Cleanup stale IDs
-            stale_ids = [
-                obs_id for obs_id, last_cycle in self.last_seen.items()
-                if self.cycle_count - last_cycle > cleanup_threshold
-            ]
-            for obs_id in stale_ids:
-                self.get_logger().debug(f"Cleaning up stale ID {obs_id}")
-                del self.history[obs_id]
-                del self.last_seen[obs_id]
-                del self.var_models[obs_id]
+            # This handles obstacles leaving the costmap window
+            missing_ids = set(self.history.keys()) - current_detection_ids
+            for obs_id in missing_ids:
+                # Only remove if it's been missing for cleanup_threshold cycles
+                if self.cycle_count - self.last_seen.get(obs_id, 0) > cleanup_threshold:
+                    self.get_logger().debug(f"Cleaning up stale ID {obs_id}")
+                    del self.history[obs_id]
+                    del self.last_seen[obs_id]
 
-        # Build prediction message
+        # Build prediction message ONLY for obstacles in current detections
         prediction_msg = ObstacleArray()
-        prediction_msg.header = msg.header  # Preserve timestamp and frame
+        prediction_msg.header = msg.header
 
         for detection in msg.obstacles:
             obs_id = detection.id
@@ -119,8 +119,8 @@ class PredictorNode(Node):
             with self.history_lock:
                 hist = list(self.history.get(obs_id, []))
 
-            # Compute predictions using VAR
-            future_poses, vel_twists = self._predict_var(obs_id, hist, prediction_steps, prediction_dt)
+            # Compute predictions
+            future_poses, vel_twists = self._predict_cv(hist, prediction_steps, prediction_dt)
 
             # Build obstacle message
             predicted_ob = Obstacle()
