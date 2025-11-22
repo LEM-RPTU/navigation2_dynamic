@@ -14,8 +14,10 @@
 
 #include "geometry_msgs/msg/point32.hpp"
 #include "geometry_msgs/msg/polygon.hpp"
-#include "nav2_dynamic_interface/msg/obstacle_array.hpp"
 #include "nav2_dynamic_interface/msg/obstacle.hpp"
+#include "nav2_dynamic_interface/msg/obstacle_array.hpp"
+#include "nav2_dynamic_interface/msg/obstacle_sequence_array.hpp"
+
 
 #include "cluster_engine.hpp"
 #include "tracker_engine.hpp"
@@ -73,8 +75,8 @@ public:
     // Subscriber: receive predictions from predictor
     rclcpp::SubscriptionOptions sub_options;
     sub_options.callback_group = sub_cb_group_;
-    predictions_sub_ = this->create_subscription<nav2_dynamic_interface::msg::ObstacleArray>(
-      "obstacles_array", 10,
+    predictions_sub_ = this->create_subscription<nav2_dynamic_interface::msg::ObstacleSequenceArray>(
+      "obstacles_sequences", 10,
       std::bind(&DetectionNode::onPredictions, this, std::placeholders::_1),
       sub_options);
 
@@ -103,7 +105,7 @@ private:
   rclcpp::CallbackGroup::SharedPtr timer_cb_group_;
   rclcpp::CallbackGroup::SharedPtr sub_cb_group_;
   rclcpp::Publisher<nav2_dynamic_interface::msg::ObstacleArray>::SharedPtr detections_pub_;
-  rclcpp::Subscription<nav2_dynamic_interface::msg::ObstacleArray>::SharedPtr predictions_sub_;
+  rclcpp::Subscription<nav2_dynamic_interface::msg::ObstacleSequenceArray>::SharedPtr predictions_sub_;
 
   // Processing engines
   ClusterEngine cluster_engine_;
@@ -164,7 +166,7 @@ private:
     msg.header.stamp = stamp;
     msg.header.frame_id = costmap_ros_->getGlobalFrameID();
 
-    for (const auto & track : tracks) {
+    for (const ObstacleTrack & track : tracks) {
       nav2_dynamic_interface::msg::Obstacle ob;
       ob.header.stamp = stamp;
       ob.header.frame_id = costmap_ros_->getGlobalFrameID();
@@ -175,7 +177,7 @@ private:
       geometry_msgs::msg::PoseWithCovariance current_pose;
       current_pose.pose.position = track.current_position;
       current_pose.pose.orientation.w = 1.0;
-      ob.position.push_back(current_pose);
+      ob.position = current_pose;
 
       ob.polygon = track.polygon;
       msg.obstacles.push_back(std::move(ob));
@@ -194,21 +196,27 @@ private:
    * Updates tracker's predicted positions for next cycle's Hungarian matching.
    * Caches predictions for potential later use.
    */
-  void onPredictions(const nav2_dynamic_interface::msg::ObstacleArray::SharedPtr msg)
+  void onPredictions(const nav2_dynamic_interface::msg::ObstacleSequenceArray::SharedPtr msg)
   {
     std::unordered_map<int64_t, geometry_msgs::msg::Point> predicted_t1;
 
-    for (const auto & ob : msg->obstacles) {
+    for (nav2_dynamic_interface::msg::ObstacleSequence &sequence : msg->obstacle_sequences) {
       // Extract t+1 prediction (position[1] if available, else fallback to position[0])
-      if (ob.position.size() > 1) {
-        predicted_t1[ob.id] = ob.position[1].pose.position;
-      } else if (!ob.position.empty()) {
+      nav2_dynamic_interface::msg::Obstacle obstacle;
+      obstacle.id = sequence.id;
+      obstacle.header = sequence.header;
+      
+      if (sequence.positions.size() > 1) { // there is at least one prediction step
+        predicted_t1[sequence.id] = sequence.positions[1].pose.position;
+        obstacle.position = sequence.positions[1];
+      } else{
         // Fallback: use current position if no prediction available
-        predicted_t1[ob.id] = ob.position[0].pose.position;
+        predicted_t1[sequence.id] = sequence.positions[0].pose.position;
+        obstacle.position = sequence.positions[0];
       }
 
       // Cache full obstacle data
-      cached_predictions_[ob.id] = ob;
+      cached_predictions_[sequence.id] = obstacle;
     }
 
     // Update tracker's expectations for next cycle
