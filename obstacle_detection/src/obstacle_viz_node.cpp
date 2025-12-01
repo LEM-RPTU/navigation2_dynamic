@@ -24,9 +24,7 @@
 class ObstacleVizNode : public rclcpp::Node
 {
 public:
-  ObstacleVizNode()
-  : Node("obstacle_viz_node")
-  {
+  ObstacleVizNode() : Node("obstacle_viz_node"){
     marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>(
       "obstacle_markers", 10);
 
@@ -42,8 +40,7 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
   std::unordered_set<int64_t> active_ids_;
 
-  void onObstacles(const nav2_dynamic_interface::msg::ObstacleSequenceArray::SharedPtr msg)
-  {
+  void onObstacles(const nav2_dynamic_interface::msg::ObstacleSequenceArray::SharedPtr msg){
     visualization_msgs::msg::MarkerArray ma;
     
     
@@ -51,7 +48,8 @@ private:
     std::string frame_id;
     std::unordered_set<int64_t> current_ids;
 
-    for (const nav2_dynamic_interface::msg::ObstacleSequence &sequence : msg->obstacle_sequences) {
+    for (const nav2_dynamic_interface::msg::ObstacleSequence &seq_ref : msg->obstacle_sequences) {
+      nav2_dynamic_interface::msg::ObstacleSequence sequence = seq_ref;
       current_ids.insert(sequence.id);
       stamp = sequence.header.stamp;
       frame_id = sequence.header.frame_id;
@@ -124,32 +122,37 @@ private:
       }
 
       // Polygon hull (convex boundary - only for current position)
-      if(!sequence.polygons.front().points.empty()){
-        visualization_msgs::msg::Marker hull;
-        hull.header.frame_id = frame_id;
-        hull.header.stamp = stamp;
-        hull.ns = "clusters_hull";
-        hull.id = sequence.id;
-        hull.type = visualization_msgs::msg::Marker::LINE_STRIP;
-        hull.action = visualization_msgs::msg::Marker::ADD;
-        hull.scale.x = 0.03;
-        hull.color.r = 1.0f;
-        hull.color.g = 0.3f;
-        hull.color.b = 0.1f;
-        hull.color.a = 0.9f;
-        hull.frame_locked = true;
-        for (const geometry_msgs::msg::Point32 &polygon_point : sequence.polygons.front().points) {
-          geometry_msgs::msg::Point point;
-          point.x = polygon_point.x;
-          point.y = polygon_point.y;
-          point.z = polygon_point.z;
-          hull.points.push_back(point);
+      bool no_polygons = sequence.polygons.empty();
+      if(no_polygons){
+        RCLCPP_WARN_THROTTLE(get_logger(), *this->get_clock(), 500, "Obstacle ID %ld has no polygon data for hull visualization.", sequence.id);
+      }else{
+        if(!sequence.polygons.front().points.empty()){
+          visualization_msgs::msg::Marker hull;
+          hull.header.frame_id = frame_id;
+          hull.header.stamp = stamp;
+          hull.ns = "clusters_hull";
+          hull.id = sequence.id;
+          hull.type = visualization_msgs::msg::Marker::LINE_STRIP;
+          hull.action = visualization_msgs::msg::Marker::ADD;
+          hull.scale.x = 0.03;
+          hull.color.r = 1.0f;
+          hull.color.g = 0.3f;
+          hull.color.b = 0.1f;
+          hull.color.a = 0.9f;
+          hull.frame_locked = true;
+          for (const geometry_msgs::msg::Point32 &polygon_point : sequence.polygons.front().points) {
+            geometry_msgs::msg::Point point;
+            point.x = polygon_point.x;
+            point.y = polygon_point.y;
+            point.z = polygon_point.z;
+            hull.points.push_back(point);
+          }
+          // Close the loop
+          if (hull.points.size() >= 3) {
+            hull.points.push_back(hull.points.front());
+          }
+          ma.markers.push_back(std::move(hull));
         }
-        // Close the loop
-        if (hull.points.size() >= 3) {
-          hull.points.push_back(hull.points.front());
-        }
-        ma.markers.push_back(std::move(hull));
       }
 
       // Covariance ellipses for ALL predicted positions
